@@ -1,0 +1,123 @@
+# Cập nhật hệ thống
+
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git vim net-tools build-essential python3.9 python3.9-venv python3.9-dev
+sudo apt-get install x11-xserver-utils xterm -y
+
+# Cài đặt Mininet và Open vSwitch (OVS)
+
+sudo apt install -y mininet openvswitch-switch
+
+# Cài đặt công cụ tấn công giả lập (hping3) để test DDoS
+
+sudo apt install -y hping3
+
+# Ref repository
+
+https://github.com/chiragbiradar/DDoS-Attack-Detection-and-Mitigation.git
+
+# Tạo môi trường ảo
+
+python3.9 -m venv env
+
+# Kích hoạt môi trường
+
+source env/bin/activate
+
+# Kiểm tra lại phiên bản, phải đảm bảo Python 3.9.x
+
+python --version
+
+# Cài đặt các thư viện
+
+pip install "setuptools<58.0.0" "wheel<0.40.0" "eventlet==0.30.2"
+pip install scikit-learn pandas numpy scapy pbr
+pip install ryu
+pip install matplotlib
+pip install seaborn
+
+pip install "setuptools<58.0.0" "wheel<0.40.0" "eventlet==0.30.2" scikit-learn pandas numpy scapy pbr ryu matplotlib seaborn
+
+pip install streamlit plotly watchdog
+
+# Cài đặt thư viện lấy thông số hệ thống, server
+
+pip install psutil flask flask-cors webob routes oslo.config msgpack netaddr "dnspython<2.0.0"
+
+# Chạy Controller
+
+ryu-manager controller.py
+
+# Chạy Topology terminal2:
+
+sudo python3.9 topology.py
+mininet> pingall
+
+# ================= KỊCH BẢN TẤN CÔNG ==============================================
+
+# ================= Tấn công UDP Flood - Tấn công băng thông
+
+# Protocol: 17 (UDP), Packet/s tăng vọt.
+
+h1 timeout 10s hping3 --flood --udp -p 80 h2
+
+# -i u1000 nghĩa là interval 1000 microsecond = 1ms/gói = 1000 gói/s
+
+# LOW RATE u10000-> 100pack/sec | High rate u100 -> 10000pack/sec
+
+h1 hping3 --udp -p 80 -i u1000 h2
+
+# 100 gói/giây - Kiểm tra độ nhạy của AI
+
+h9 hping3 --udp -p 80 -i u1000 h10
+
+# 10.000 gói/giây - Tải cao nhưng ko treo
+
+h11 hping3 --udp -p 80 -i u100 h12
+
+# ================= TCP SYN Flood - Tấn công tài nguyên kết nối
+
+# TCP SYN - cờ flags, kích thước gói tin nhỏ, tần suất cao.
+
+# Có ip_proto là 6, chỉ số pps cao
+
+h3 timeout 20s hping3 -S --flood -p 80 h4
+h3 timeout 20s hping3 -S -p 80 -i u1000 h4
+
+# ================= ICMP Flood
+
+h5 timeout 20s hping3 --flood --icmp h6
+h5 timeout 20s hping3 --icmp -i u1000 h6
+
+# DDoS - Distributed
+
+# Controller sẽ hiển thị log cảnh báo với nhiều dòng Src khác nhau cùng trỏ về một Dst.
+
+# Mở Server trên victim
+
+mininet> xterm h18
+iperf -s -u -p 80 &
+
+# Mở 4 cửa sổ tấn công Tại Mininet CLI, gõ:
+
+mininet> xterm h1 h3 h4 h5
+h1: hping3 --udp -p 80 -i u10000 10.0.0.18
+h3: hping3 --udp -p 80 -i u10000 10.0.0.18
+h4: hping3 --udp -p 80 -i u10000 10.0.0.18
+h5: hping3 --udp -p 80 -i u10000 10.0.0.18
+
+# ================================ Plot dashboard ===================================
+
+streamlit run dashboard.py
+
+  Local URL: http://localhost:8501
+  Network URL: http://172.28.43.238:8501
+
+# Chạy Web API Server
+
+python3.9 server.py
+
+# http://localhost:5000
+
+sudo fuser -k 5000/tcp

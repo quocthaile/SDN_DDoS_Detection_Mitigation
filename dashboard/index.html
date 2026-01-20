@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SOC Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="main-header">
+        <div class="header-left">
+            <div class="logo"><h1>🛡️ SDN AI-GUARD</h1></div>
+        </div>
+        <div class="header-center">
+            <nav class="main-nav">
+                <button class="nav-btn active" data-view="monitoring">Giám sát</button>
+                <button class="nav-btn" data-view="incidents">Sự cố</button>
+                <button class="nav-btn" data-view="policies">Chính sách</button>
+            </nav>
+        </div>
+        <div class="header-right">
+            <div class="system-status"><span class="status-dot status-safe"></span> Hệ thống hoạt động</div>
+        </div>
+    </header>
+
+    <main class="main-content">
+        <section class="view-section active" id="monitoring-view">
+            <div class="hybrid-layout">
+                <div class="monitoring-panel">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon stat-icon-danger">⚡</div>
+                            <div class="stat-content">
+                                <div class="stat-label">Tấn công đang diễn ra</div>
+                                <div class="stat-value stat-value-danger">0</div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon stat-icon-warning">⚠</div>
+                            <div class="stat-content">
+                                <div class="stat-label">Cảnh báo cao</div>
+                                <div class="stat-value stat-value-warning">0</div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon stat-icon-success">✓</div>
+                            <div class="stat-content">
+                                <div class="stat-label">Đã xử lý hôm nay</div>
+                                <div class="stat-value stat-total-processed">0</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="chart-container">
+                        <div class="chart-header">
+                            <div class="header-title-group">
+                                <h3>Lưu lượng mạng (Real-time)</h3>
+                                <span id="current-speed" class="speed-badge">0 KB/s</span>
+                            </div>
+                            <div class="chart-legend">
+                                <span class="legend-item"><span class="legend-color" style="background:#52C41A"></span> Normal</span>
+                                <span class="legend-item"><span class="legend-color" style="background:#FF4D4F"></span> Attack</span>
+                            </div>
+                        </div>
+                        <div class="chart-canvas"><canvas id="trafficCanvas"></canvas></div>
+                    </div>
+
+                    <div class="system-health-grid">
+                        <div class="health-card">
+                            <div class="chart-header">
+                                <h3>CPU Usage</h3>
+                                <span id="cpu-val" style="color: #1890FF; font-weight: bold;">0%</span>
+                            </div>
+                            <div class="chart-canvas" style="height: 150px;">
+                                <canvas id="cpuCanvas"></canvas>
+                            </div>
+                        </div>
+                        <div class="health-card">
+                            <div class="chart-header">
+                                <h3>RAM Usage</h3>
+                                <span id="ram-val" style="color: #FAAD14; font-weight: bold;">0%</span>
+                            </div>
+                            <div class="chart-canvas" style="height: 150px;">
+                                <canvas id="ramCanvas"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="alerts-panel">
+                    <div class="panel-header"><h2>Cảnh báo mới nhất</h2></div>
+                    <div class="alerts-list">
+                        <div style="text-align:center; color: #666; padding: 20px;">Đang tải dữ liệu...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="view-section" id="incidents-view">
+            <div class="kanban-board">
+                <div class="kanban-column"><div class="column-header column-detected">Detected</div><div class="column-content" id="col-detected"></div></div>
+                <div class="kanban-column"><div class="column-header column-investigating">Investigating</div><div class="column-content" id="col-investigating"></div></div>
+                <div class="kanban-column"><div class="column-header column-mitigating">Mitigating</div><div class="column-content" id="col-mitigating"></div></div>
+                <div class="kanban-column"><div class="column-header column-resolved">Resolved</div><div class="column-content" id="col-resolved"></div></div>
+            </div>
+        </section>
+
+        <section class="view-section" id="policies-view">
+            <div class="policies-container">
+                <div class="policy-section">
+                    <h3>Firewall Rules</h3>
+                    <table class="policy-table" id="rules-table">
+                        <thead><tr><th>ID</th><th>Name</th><th>Src</th><th>Action</th><th>Status</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div class="policy-section">
+                    <h3>IP Blacklist (History)</h3>
+                    <table class="policy-table" id="blacklist-table">
+                        <thead><tr><th>IP Address</th><th>Reason</th><th>Blocks</th><th>Last Seen</th><th>Action</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </main>
+    <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+Timestamp,SrcIP,DstIP,Proto,Rate,Reason,Result,Action
+15:22:21,10.0.0.1,10.0.0.2,17,2826810,AI Detected (UDP Volumetric Flood),ATTACK,BLOCKED
+15:22:21,10.0.0.1,10.0.0.2,17,2861860,AI Detected (UDP Volumetric Flood),ATTACK,BLOCKED
+15:22:21,10.0.0.1,10.0.0.2,17,2897910,AI Detected (UDP Volumetric Flood),ATTACK,BLOCKED
+15:22:22,10.0.0.1,10.0.0.2,17,40064,AI Detected (UDP Volumetric Flood),ATTACK,BLOCKED
+15:22:52,10.0.0.3,10.0.0.4,6,376137,Volumetric Rate > 500 (TCP SYN Flood),ATTACK,BLOCKED
+15:23:09,10.0.0.3,10.0.0.4,6,274341,Volumetric Rate > 500 (TCP SYN Flood),ATTACK,BLOCKED
+15:23:10,10.0.0.3,10.0.0.4,6,29854,Volumetric Rate > 500 (TCP SYN Flood),ATTACK,BLOCKED
+15:23:29,10.0.0.5,10.0.0.6,1,31256,Volumetric Rate > 500 (ICMP Echo Flood),ATTACK,BLOCKED
