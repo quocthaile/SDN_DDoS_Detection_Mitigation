@@ -1,13 +1,18 @@
 #!/bin/bash
 
-# ====== CONFIG ======
+# ==============================
+# CONFIGURATION
+# ==============================
 SRC="/home/thailq/SDN_DDoS_Detection_Mitigation"
 DEST="/mnt/d/drive/UIT/HK3/Nhap mon dam bao va an ninh thong tin/Do an/source/SDN_DDoS_Detection_Mitigation"
 
 LOGFILE="/home/thailq/wsl_to_windows_backup.log"
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
 
-# ====== PRE-CHECKS ======
+# ==============================
+# PRE-CHECKS
+# ==============================
+
 if [ ! -d "$SRC" ]; then
   echo "[$TIMESTAMP] ERROR: Source directory does not exist: $SRC" | tee -a "$LOGFILE"
   exit 1
@@ -18,17 +23,20 @@ if [ ! -d "$DEST" ]; then
   mkdir -p "$DEST"
 fi
 
-# ====== BACKUP COMMAND ======
-echo "[$TIMESTAMP] Starting backup WSL -> Windows..." | tee -a "$LOGFILE"
+# ==============================
+# BACKUP (GIT-SAFE MODE)
+# ==============================
+
+echo "[$TIMESTAMP] Starting WSL -> Windows backup (GIT-1 mode)..." | tee -a "$LOGFILE"
 
 rsync -avh \
-  --delete-after \
   --progress \
+  --exclude="env/" \
+  --exclude=".git/" \
   --exclude=".git/hooks/*" \
   --exclude=".cache/" \
   --exclude="__pycache__/" \
   --exclude="*.pyc" \
-  --exclude="*env/"\
   "$SRC/" "$DEST/" | tee -a "$LOGFILE"
 
 STATUS=${PIPESTATUS[0]}

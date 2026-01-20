@@ -62,6 +62,7 @@ mininet> pingall
 
 h1 timeout 10s hping3 --flood --udp -p 80 h2
 
+
 # -i u1000 nghĩa là interval 1000 microsecond = 1ms/gói = 1000 gói/s
 
 # LOW RATE u10000-> 100pack/sec | High rate u100 -> 10000pack/sec
@@ -113,11 +114,5 @@ streamlit run dashboard.py
 
   Local URL: http://localhost:8501
   Network URL: http://172.28.43.238:8501
-
-# Chạy Web API Server
-
-python3.9 server.py
-
-# http://localhost:5000
 
 sudo fuser -k 5000/tcp

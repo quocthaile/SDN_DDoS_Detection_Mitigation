@@ -20,6 +20,11 @@ class SimpleMonitor13(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(SimpleMonitor13, self).__init__(*args, **kwargs)
+        
+        # --- [CẤU HÌNH] BẬT/TẮT LOG AI PREDICT TẠI ĐÂY ---
+        self.ENABLE_AI_PREDICT_LOG = True 
+        # -------------------------------------------------
+
         self.mac_to_port = {}
         self.datapaths = {}
         self.STATUS_INTERVAL = 1 
@@ -40,7 +45,6 @@ class SimpleMonitor13(app_manager.RyuApp):
         
         # --- PATH CONFIGURATION ---
         CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-        # Đảm bảo thư mục log tồn tại
         LOG_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "../attack_log"))
         if not os.path.exists(LOG_DIR):
             os.makedirs(LOG_DIR)
@@ -49,6 +53,10 @@ class SimpleMonitor13(app_manager.RyuApp):
         self.DDOS_DATASET_FILE = os.path.join(LOG_DIR, "ddos_captured_dataset.csv")
         self.MANUAL_BLOCK_FILE = os.path.join(LOG_DIR, "manual_blocks.txt")
         self.ATTACK_LOG_FILE = os.path.join(LOG_DIR, "attack_logs.csv")
+        
+        # [MỚI] File log chi tiết AI Prediction
+        self.AI_PREDICT_LOG_FILE = os.path.join(LOG_DIR, "ai_predict.csv")
+        
         self.DEBUG_FILE = "debug_ai_prediction.log"
         
         self._init_files()
@@ -75,6 +83,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             f.write("Timestamp,SrcIP,DstIP,Proto,Rate,Reason,Result,Action\n")
 
     def _init_files(self):
+        # Init Dataset file
         if not os.path.exists(self.DDOS_DATASET_FILE):
             cols = [
                 "Flow ID", "Source IP", "Src Port", "Destination IP", "Dst Port",
@@ -88,6 +97,14 @@ class SimpleMonitor13(app_manager.RyuApp):
             with open(self.DDOS_DATASET_FILE, "w") as f:
                 f.write(",".join(cols) + "\n")
             try: os.chmod(self.DDOS_DATASET_FILE, 0o666)
+            except: pass
+
+        # [MỚI] Init AI Predict Log file
+        if self.ENABLE_AI_PREDICT_LOG and not os.path.exists(self.AI_PREDICT_LOG_FILE):
+            headers = "Timestamp,SrcIP,DstIP,Proto,PPS,AI_Prob_Normal,AI_Prob_Attack,Verdict,Action,Reason\n"
+            with open(self.AI_PREDICT_LOG_FILE, "w") as f:
+                f.write(headers)
+            try: os.chmod(self.AI_PREDICT_LOG_FILE, 0o666)
             except: pass
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -168,17 +185,14 @@ class SimpleMonitor13(app_manager.RyuApp):
 
     def _monitor(self):
         while True:
-            # 1. Dọn dẹp danh sách Block hết hạn
             current_ts = datetime.now().timestamp()
             expired_ips = [ip for ip, data in self.blocked_ips.items() if current_ts > data['unlock_time']]
             for ip in expired_ips:
-                del self.blocked_ips[ip] # Chỉ xóa khỏi danh sách block, không xóa history flow ở đây
+                del self.blocked_ips[ip]
 
-            # 2. Reset Priority hiển thị Dashboard
             if self.latest_pred['priority'] < 2:
                  self.latest_pred['priority'] = -1
                  
-            # 3. Yêu cầu số liệu
             for dp in self.datapaths.values():
                 self._request_stats(dp)
                 self._check_manual_blocks(dp)
@@ -191,7 +205,6 @@ class SimpleMonitor13(app_manager.RyuApp):
         try:
             with open(self.MANUAL_BLOCK_FILE, "r") as f:
                 lines = f.readlines()
-            # Clear file sau khi đọc
             with open(self.MANUAL_BLOCK_FILE, "w") as f: f.write("")
             
             for line in lines:
@@ -226,9 +239,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             ip_src = stat.match['ipv4_src']
             ip_dst = stat.match['ipv4_dst']
             
-            # Nếu Dst là IP đang bị block -> Đây là gói tin phản hồi (Backscatter) -> Bỏ qua
-            if ip_dst in self.blocked_ips:
-                continue
+            if ip_dst in self.blocked_ips: continue
 
             ip_proto = stat.match.get('ip_proto', 0)
             
@@ -237,7 +248,6 @@ class SimpleMonitor13(app_manager.RyuApp):
             elif ip_proto == 17: self.traffic_summary['UDP'] += 1
             self.traffic_summary['Total'] += 1
 
-            # --- [LOGIC TÍNH RATE CHÍNH XÁC - RESTORED FROM OLD VER] ---
             packet_count = stat.packet_count
             byte_count = stat.byte_count
             flow_key = (ev.msg.datapath.id, ip_src, ip_dst, ip_proto)
@@ -251,29 +261,21 @@ class SimpleMonitor13(app_manager.RyuApp):
                 delta_bytes = byte_count - last_bytes
                 delta_time = current_time - last_ts
                 
-                # [FIX CRITICAL]: Chống Rate Dilution (Pha loãng tốc độ)
-                # Nếu khoảng cách giữa 2 lần đo quá lớn (> 3s), có thể do vừa hết Block.
-                # Lúc này delta_pkts rất nhỏ nhưng delta_time rất lớn (60s) -> PPS về 0.
-                # Giải pháp: Bỏ qua lần tính này, Reset mốc thời gian. Lần sau (1s) sẽ tính đúng.
                 if delta_time > 3.0: 
                     self.flow_history[flow_key] = (packet_count, byte_count, current_time)
                     continue 
 
-                # Xử lý trường hợp Switch reset counter
                 if delta_pkts < 0: 
                     delta_pkts = packet_count
                     delta_bytes = byte_count
 
-                if delta_time < 0.1: delta_time = 0.1 # Tránh chia cho 0
+                if delta_time < 0.1: delta_time = 0.1
                 
                 pps_rate = delta_pkts / delta_time
                 bps_rate = delta_bytes / delta_time
             
-            # Cập nhật lịch sử
             self.flow_history[flow_key] = (packet_count, byte_count, current_time)
 
-            # --- [TUNING NGƯỠNG PHÁT HIỆN] ---
-            # 1. Ngưỡng Lọc Nhiễu (Restore 50 để tránh False Positive)
             if pps_rate < 50: continue
 
             icmp_type = 8 if ip_proto == 1 else 0
@@ -292,28 +294,25 @@ class SimpleMonitor13(app_manager.RyuApp):
             reason = self._get_attack_reason(ip_proto, pps_rate)
             verdict = "Normal"
             conf_score = 0.0
+            probs = [1.0, 0.0] # Default
             display_priority = 0
 
             if self.model:
                 try:
                     features_scaled = self.scaler.transform(features)
-                    probs = self.model.predict_proba(features_scaled)[0]
+                    probs = self.model.predict_proba(features_scaled)[0] # [Prob_Normal, Prob_Attack]
                     conf_score = probs[1]
                     
-                    # 1. Normal Zone
                     if pps_rate < 50:
                         verdict = "Normal"
                         display_priority = 0
                     
-                    # 2. Suspicious/Attack Zone
-                    # [FIX]: Logic cũ quá hiền (chỉ cảnh báo).
-                    # Logic mới: Nếu AI nghi ngờ HOẶC Tốc độ cao (> 500) -> CHẶN LUÔN
                     is_attack = False
                     
-                    if conf_score >= 0.8: # AI chắc chắn
+                    if conf_score >= 0.8:
                         is_attack = True
                         reason = f"AI Detected ({reason})"
-                    elif pps_rate > 500: # [RESTORE] Fallback Threshold 500 (như bản cũ)
+                    elif pps_rate > 500:
                         is_attack = True
                         reason = f"Volumetric Rate > 500 ({reason})"
                     
@@ -321,20 +320,19 @@ class SimpleMonitor13(app_manager.RyuApp):
                         verdict = "ATTACK"
                         action_status = "BLOCKED"
                         display_priority = 2
-                        
-                        # Thực hiện chặn
                         self._block_ip(ev.msg.datapath, ip_src, ip_dst, ip_proto)
                         self._log_attack(ip_src, ip_dst, ip_proto, packet_count, label="Attack", reason=reason)
                         self._log_full_dataset(ip_src, ip_dst, ip_proto, stat, pps_rate, bps_rate)
                     
-                    elif pps_rate > 200: # Vùng xám (200 - 500) mà AI không bắt
+                    elif pps_rate > 200:
                         verdict = "SUSPICIOUS"
                         action_status = "ALERT"
                         display_priority = 1
                         self._log_attack(ip_src, ip_dst, ip_proto, packet_count, label="Suspicious", reason=reason)
 
-                    # Cập nhật hiển thị (Chỉ cập nhật nếu mức độ nghiêm trọng >= mức hiện tại)
-                    # Điều này ngăn việc luồng phản hồi (Normal) ghi đè lên luồng tấn công (Attack)
+                    # [MỚI] Ghi log AI Predict (Tự động ghi mọi phán đoán)
+                    self._log_ai_prediction(ip_src, ip_dst, ip_proto, pps_rate, probs, verdict, action_status, reason)
+
                     if display_priority >= self.latest_pred['priority']:
                         self.latest_pred = {
                             'src': ip_src, 'dst': ip_dst, 'proto': ip_proto,
@@ -348,6 +346,20 @@ class SimpleMonitor13(app_manager.RyuApp):
                     self._write_debug_log(ip_src, ip_dst, ip_proto, pps_rate, reason, verdict, action_status)
 
                 except Exception as e: pass
+
+    # [MỚI] Hàm ghi log dự đoán AI chi tiết
+    def _log_ai_prediction(self, src, dst, proto, pps, probs, verdict, action, reason):
+        if not self.ENABLE_AI_PREDICT_LOG: return
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            prob_normal = f"{probs[0]:.2f}"
+            prob_attack = f"{probs[1]:.2f}"
+            
+            line = f"{timestamp},{src},{dst},{proto},{pps:.0f},{prob_normal},{prob_attack},{verdict},{action},{reason}\n"
+            
+            with open(self.AI_PREDICT_LOG_FILE, "a") as f:
+                f.write(line)
+        except: pass
 
     def _log_full_dataset(self, src, dst, proto, stat, pps, bps):
         try:
@@ -381,7 +393,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             
             df = pd.DataFrame(data_list)
             df.to_csv(self.HISTORY_FILE, index=False)
-            os.chmod(self.HISTORY_FILE, 0o666) # Cấp quyền cho Dashboard đọc
+            os.chmod(self.HISTORY_FILE, 0o666)
         except: pass
 
     def _block_ip(self, datapath, ip_src, ip_dst, proto):
@@ -390,8 +402,6 @@ class SimpleMonitor13(app_manager.RyuApp):
         if ip_src in self.blocked_ips:
             if current_time < self.blocked_ips[ip_src]['unlock_time']: return 
 
-        # [QUAN TRỌNG] Xóa history của flow này để khi hết chặn, nó được coi là flow mới
-        # Điều này kích hoạt logic "Reset Baseline" ở trên, tránh lỗi treo hệ thống.
         keys_to_remove = [k for k in self.flow_history if k[1] == ip_src]
         for k in keys_to_remove:
             del self.flow_history[k]
@@ -427,7 +437,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             }])
             header = not os.path.exists(self.ATTACK_LOG_FILE)
             log_df.to_csv(self.ATTACK_LOG_FILE, mode='a', header=header, index=False)
-            os.chmod(self.ATTACK_LOG_FILE, 0o666) # Cấp quyền cho Dashboard đọc
+            os.chmod(self.ATTACK_LOG_FILE, 0o666) 
         except: pass
 
     def _print_dashboard(self):
@@ -447,7 +457,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             print(f"║ {prefix}{color}{content}\033[0m{suffix}{' '*padding} ║")
 
         print(f"╔{'═'*(W-2)}╗")
-        title = "SDN AI-GUARD DASHBOARD v3.3 (Robust)"; time_str = f"Time: {now}"
+        title = "SDN AI-GUARD DASHBOARD v3.3 (AI-LOG)"; time_str = f"Time: {now}"
         gap = IW - len(title) - len(time_str)
         if gap < 0: gap = 1
         print(f"║ {title}{' '*gap}{time_str} ║")
