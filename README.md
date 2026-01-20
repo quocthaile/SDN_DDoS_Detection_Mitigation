@@ -86,3 +86,142 @@ sudo apt install mininet openvswitch-switch hping3 -y
 # Python libraries
 pip install ryu scikit-learn pandas numpy streamlit altair psutil
 ```
+
+### 4.2 Running the System
+
+Open three separate terminals to run the components simultaneously.
+
+**Terminal 1: SDN Controller** (Runs the logic and AI engine)
+
+```bash
+# Change to controller's directory
+cd sdn_controller
+
+# Run ryu controller
+ryu-manager controller.py
+```
+
+Note: This generates `attack_log/attack_logs.csv` and `attack_log/manual_blocks.txt`.
+
+**Terminal 2: Monitoring Dashboard** (Web Interface)
+
+```bash
+# Run streamlit
+streamlit run dashboard.py
+```
+
+### **Terminal 3: Network Topology** (Mininet)
+
+```bash
+sudo python3 mininet_topology.py
+# Inside Mininet CLI, verify connectivity:
+mininet> pingall
+```
+
+## 5. Attack Scenarios & Testing
+
+We use `hping3` within the Mininet CLI to simulate various attack vectors. Below are the specific commands used to test the system's detection capabilities.
+
+### 5.1 UDP Flood (Bandwidth Exhaustion)
+*Target: Consuming network bandwidth using high-frequency UDP packets (Protocol 17).*
+
+**Scenario A: Max Speed Flood**
+Sends packets as fast as possible to overwhelm the link.
+```bash
+h1 timeout 10s hping3 --flood --udp -p 80 h2
+```
+
+**Scenario B: Controlled Rate Attacks**
+Using the -i flag to set specific intervals (u1000 = 1000 microseconds = 1000 packets/sec).
+
+* **Standard High Rate (1,000 pps):** Simulates a standard volumetric attack.
+```bash
+h3 hping3 --udp -p 80 -i u1000 h4
+```
+
+* **AI Sensitivity Check (100 pps): ** Testing if the AI detects attacks at lower rates (u10000 approx 100 pps) or if it treats them as benign.
+```bash
+h5 hping3 --udp -p 80 -i u10000 h6
+```
+
+* **High Load Stress Test (10,000 pps): ** Generating extremely high load (-i u100) to test controller stability and ensure it does not freeze under pressure.
+```bash
+h7 hping3 --udp -p 80 -i u100 h8
+```
+
+### 5.2 TCP SYN Flood (Resource Exhaustion)
+*Target: Exhausting server resources (RAM/Connections) using TCP SYN packets (Protocol 6) with high frequency.*
+
+**Scenario A: SYN Flood (Max Speed)**
+```bash
+h9 timeout 20s hping3 -S --flood -p 80 h10
+```
+
+**Scenario B: SYN Flood (Controlled Rate)**
+```bash
+h11 timeout 20s hping3 -S -p 80 -i u1000 h12
+```
+
+### 5.3 ICMP Flood (Ping Flood)
+*Target: Overwhelming the target with ICMP Echo Requests.*
+
+**Scenario A: ICMP Flood (Max Speed)**
+```bash
+h13 timeout 20s hping3 --flood --icmp h14
+```
+
+**Scenario B: ICMP Flood (Controlled Rate)**
+```bash
+h15 timeout 20s hping3 --icmp -i u1000 h16
+```
+
+## 6. Monitoring & Dashboard
+
+The Streamlit dashboard serves as the central command center, providing real-time visibility into the network's security posture.
+
+### 6.1 Dashboard Features
+* **Real-time Traffic Visualization:**
+    * A dynamic area chart displaying network throughput in **KB/s** or **MB/s**.
+    * **Visual Alert:** The chart line turns **RED** immediately when the AI detects malicious activity, and **GREEN** during normal operation.
+* **Live Attack Logs:**
+    * Displays the most recent 10 detected threats.
+    * Columns include: `Timestamp`, `Source IP`, `Destination IP`, `Attack Type` (e.g., UDP Flood, SYN Flood), and `AI Confidence Score`.
+    * **Export:** Includes a "Download Full Logs" button to export the complete history to CSV for forensic analysis.
+* **System Health Monitoring:**
+    * Tracks the **CPU** and **RAM** usage of the controller machine to ensure the security system itself is not being overwhelmed (DoS against the Controller).
+* **Manual Control Panel:**
+    * A sidebar interface allowing administrators to manually input and **Block** specific IP addresses immediately, overriding the AI's decision if necessary.
+
+### 6.2 Accessing the Dashboard
+Once `dashboard.py` is running, open your web browser and navigate to:
+* **Local URL:** `http://localhost:8501`
+* **Network URL:** `http://<CONTROLLER_IP>:8501`
+
+---
+
+## 7. Future Work & Development Roadmap
+
+While the current system effectively handles standard DDoS scenarios, the following improvements are proposed to enhance scalability and robustness in production environments:
+
+### 7.1 Database Integration
+* **Current State:** The system relies on CSV files (`attack_logs.csv`) for logging. This can lead to file-locking issues (race conditions) when high-frequency attacks occur while the dashboard is trying to read the file.
+* **Proposal:** Migrate to a lightweight SQL database (e.g., **SQLite**) or a time-series database (e.g., **InfluxDB**) to handle concurrent read/write operations efficiently without blocking I/O.
+
+### 7.2 Mitigation Strategy Optimization
+* **Current State:** Mitigation is primarily based on **Source IP Blocking**.
+* **Limitation:** This is less effective against **IP Spoofing** attacks (e.g., `--rand-source`), as the attacker generates infinite unique source IPs, rapidly filling the switch's flow table.
+* **Proposal:**
+    * Implement **Destination-based Blocking**: If a victim host is overwhelmed, temporarily drop all UDP traffic destined for that host.
+    * Utilize **OpenFlow Meter Tables**: Instead of hard drops, use meters to perform **Rate Limiting** (QoS), ensuring legitimate traffic can still pass through at a reduced speed.
+
+### 7.3 Advanced Feature Engineering
+* **Current State:** The model uses flow-based statistics (Packet Count, Byte Count, Duration).
+* **Proposal:** Introduce **Entropy-based features** (e.g., Shannon Entropy of Source IPs per Destination). A sudden spike in Source IP entropy is a strong indicator of a Distributed (DDoS) attack versus a Single-source (DoS) attack.
+
+### 7.4 Intelligent Unbanning Mechanism
+* **Current State:** Blocked IPs are released after a fixed duration of **60 seconds**.
+* **Proposal:** Implement an **Exponential Backoff** algorithm.
+    * 1st Offense: Block for 1 minute.
+    * 2nd Offense: Block for 5 minutes.
+    * 3rd Offense: Block for 30 minutes.
+    This penalizes persistent attackers more severely while allowing legitimate users (who may have been infected) to return sooner after cleaning their systems.
