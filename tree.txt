@@ -1,22 +1,20 @@
 .
 ├── README.md
 ├── attack_log
+│   ├── ai_predict.csv
 │   ├── attack_logs.csv
 │   ├── ddos_captured_dataset.csv
 │   ├── desktop.ini
-│   ├── manual_blocks.txt
 │   └── offender_history.csv
 ├── backup_wsl_to_windows.sh
-├── cmd_attack.txt
 ├── dashboard
-│   ├── desktop.ini
-│   ├── index.html
-│   ├── script.js
-│   └── styles.css
+│   └── dashboard.py
 ├── dataset
 │   ├── dataset.csv
 │   ├── desktop.ini
 │   └── generate_dataset.py
+├── image
+│   └── README
 ├── machine_learning
 │   ├── ML.py
 │   ├── desktop.ini
@@ -29,21 +27,18 @@
 │   ├── desktop.ini
 │   ├── rf_model.pkl
 │   └── scaler.pkl
-├── requirements.md
+├── note_report.txt
+├── requirements.txt
 ├── sdn_controller
 │   ├── __pycache__
+│   │   ├── 2.cpython-39.pyc
 │   │   ├── controller.cpython-39.pyc
 │   │   └── desktop.ini
 │   ├── controller.py
-│   ├── controller_g.py
 │   ├── dashboard.py
+│   ├── dashboard.py:Zone.Identifier
 │   ├── debug_ai_prediction.log
-│   ├── desktop.ini
-│   ├── index.html
-│   ├── mininet_topology.py
-│   ├── mininet_topology.py:Zone.Identifier
-│   ├── server.py
-│   └── server.py:Zone.Identifier
+│   └── mininet_topology.py
 └── tree.txt
 
-9 directories, 38 files
+11 directories, 31 files

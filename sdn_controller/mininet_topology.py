@@ -71,8 +71,19 @@ def startNetwork():
     net = Mininet(topo=topo, link=TCLink, controller=c0, switch=OVSKernelSwitch)
 
     net.start()
-    print("--- Mininet đã khởi động với OpenFlow 1.3 và Controller Localhost ---")
-    print("--- Đừng quên chạy lệnh 'pingall' trước khi tấn công! ---")
+    print("--- Mininet started with OpenFlow 1.3 and Localhost Controller ---")
+    print("--- Network summary ---")
+    print(f"Controller: {c0.name} | IP: {c0.ip} | Port: {c0.port}")
+    print(f"Switches ({len(net.switches)}): {', '.join([s.name for s in net.switches])}")
+    print(f"Hosts ({len(net.hosts)}): {', '.join([h.name for h in net.hosts])}")
+    print("Host details (name | IP | MAC):")
+    for h in net.hosts:
+        print(f"- {h.name} | {h.IP()} | {h.MAC()}")
+    print(f"Links ({len(net.links)}):")
+    for link in net.links:
+        node1, node2 = link.intf1.node, link.intf2.node
+        print(f"- {node1.name} <-> {node2.name}")
+    print("--- Reminder: run 'pingall' before starting attacks ---")
     CLI(net)
     net.stop()
 
