@@ -13,12 +13,12 @@ sudo apt install -y mininet openvswitch-switch
 # Cài đặt công cụ tấn công giả lập (hping3) để test DDoS
 sudo apt install -y hping3
 
-
 # Tạo môi trường ảo
 python3.9 -m venv env
 
 # Kích hoạt môi trường
-source env/bin/activate
+source ~/SDN_DDoS_Detection_Mitigation/env/bin/activate
+cd ~/SDN_DDoS_Detection_Mitigation/sdn_controller/
 
 # Kiểm tra lại phiên bản, phải đảm bảo Python 3.9.x
 python --version
@@ -31,6 +31,10 @@ pip install seaborn streamlit plotly watchdog
 # Thư viện lấy thông số hệ thống, server
 pip install psutil flask flask-cors webob routes oslo.config msgpack netaddr "dnspython<2.0.0"
 
+# Kích hoạt môi trường
+source ~/SDN_DDoS_Detection_Mitigation/env/bin/activate
+cd ~/SDN_DDoS_Detection_Mitigation/sdn_controller/
+
 
 # ================================ Plot dashboard ===================================
 
@@ -42,32 +46,3 @@ streamlit run dashboard.py
 
 
 
-LƯU Ý KHI VIẾT BÁO CÁO:
-
-Chèn Code: Với mỗi phần mô tả kỹ thuật (3.4), hãy copy các đoạn code quan trọng từ controller_new.py vào báo cáo và giải thích dòng code đó làm gì. Điều này làm tăng độ dài và tính thuyết phục kỹ thuật.
-
-Chèn Công thức: Viết rõ công thức tính Standard Scaler, công thức tính PPS.
-
-Tận dụng Hình ảnh: Bạn đã có rất nhiều ảnh đẹp (Dashboard đỏ, Dashboard xanh, Terminal log, Cấu trúc thư mục). Hãy chèn rải rác để minh họa cho từng tiểu mục.
-
-Phần Tài liệu tham khảo: Nhớ trích dẫn nguồn dataset CIC-DDoS2019 và các thư viện Ryu/Streamlit.
-
-
-# Bật server trên h18
-h18 iperf -s -u -p 80 &
-
-# Tắt server
-h18 killall iperf
-
-# Tấn công distributed
-mininet> h1 hping3 --udp -p 80 -i u10000 10.0.0.18 &
-mininet> h3 hping3 --udp -p 80 -i u10000 10.0.0.18 &
-mininet> h4 hping3 --udp -p 80 -i u10000 10.0.0.18 &
-mininet> h5 hping3 --udp -p 80 -i u10000 10.0.0.18 &
-
-
-# Tắt hping3 trên tất cả các host
-mininet> h1 killall hping3
-mininet> h3 killall hping3
-mininet> h4 killall hping3
-mininet> h5 killall hping3

@@ -187,6 +187,35 @@ h13 timeout 20s hping3 --flood --icmp h14
 h15 timeout 20s hping3 --icmp -i u1000 h16
 ```
 
+### 5.4 Distributed UDP Flood (Multi-Source)
+
+*Target: Many hosts simultaneously flood a single server to emulate a distributed attack: h1, h3, h4, h5 attack server h18.*
+
+**Step 1: Start UDP server on the victim host**
+
+```bash
+h18 iperf -s -u -p 80 &
+```
+
+**Step 2: Launch distributed attackers from multiple hosts**
+
+```bash
+mininet> h1 hping3 --udp -p 80 -i u100 10.0.0.18 &
+mininet> h3 hping3 --udp -p 80 -i u100 10.0.0.18 &
+mininet> h4 hping3 --udp -p 80 -i u100 10.0.0.18 &
+mininet> h5 hping3 --udp -p 80 -i u100 10.0.0.18 &
+```
+
+**Step 3: Stop the attack and server**
+
+```bash
+mininet> h1 killall hping3
+mininet> h3 killall hping3
+mininet> h4 killall hping3
+mininet> h5 killall hping3
+h18 killall iperf
+```
+
 ## 6. Monitoring & Dashboard
 
 The Streamlit dashboard serves as the central command center, providing real-time visibility into the network's security posture.
@@ -244,3 +273,10 @@ While the current system effectively handles standard DDoS scenarios, the follow
   * 2nd Offense: Block for 5 minutes.
   * 3rd Offense: Block for 30 minutes.
     This penalizes persistent attackers more severely while allowing legitimate users (who may have been infected) to return sooner after cleaning their systems.
+
+---
+
+## References
+
+* https://github.com/chiragbiradar/DDoS-Attack-Detection-and-Mitigation.git
+* https://www.unb.ca/cic/datasets/ddos-2019.html

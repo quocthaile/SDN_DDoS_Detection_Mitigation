@@ -1,0 +1,9 @@
+LƯU Ý KHI VIẾT BÁO CÁO:
+
+Chèn Code: Với mỗi phần mô tả kỹ thuật (3.4), hãy copy các đoạn code quan trọng từ controller_new.py vào báo cáo và giải thích dòng code đó làm gì. Điều này làm tăng độ dài và tính thuyết phục kỹ thuật.
+
+Chèn Công thức: Viết rõ công thức tính Standard Scaler, công thức tính PPS.
+
+Tận dụng Hình ảnh: Bạn đã có rất nhiều ảnh đẹp (Dashboard đỏ, Dashboard xanh, Terminal log, Cấu trúc thư mục). Hãy chèn rải rác để minh họa cho từng tiểu mục.
+
+Phần Tài liệu tham khảo: Nhớ trích dẫn nguồn dataset CIC-DDoS2019 và các thư viện Ryu/Streamlit.

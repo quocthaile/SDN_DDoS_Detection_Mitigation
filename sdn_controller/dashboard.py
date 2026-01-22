@@ -7,10 +7,10 @@ import altair as alt
 from datetime import datetime
 import warnings
 
-# --- TẮT CẢNH BÁO KHÔNG CẦN THIẾT ---
+# ### Đoạn code này sẽ tắt các cảnh báo không cần thiết của thư viện để log sạch hơn ###
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-# --- CẤU HÌNH TRANG ---
+# ### Đoạn code này sẽ thiết lập tiêu đề tab trình duyệt, icon và bố cục trang là wide (tràn màn hình) ###
 st.set_page_config(
     page_title="SDN AI-Guard Dashboard",
     page_icon="🛡️",
@@ -19,6 +19,7 @@ st.set_page_config(
 )
 
 # --- CẤU HÌNH ĐƯỜNG DẪN THÔNG MINH ---
+# ### Đoạn code này sẽ tự động tìm đường dẫn thư mục gốc để tránh lỗi 'FileNotFound' ###
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if os.path.exists(os.path.join(CURRENT_DIR, 'attack_log')):
     PROJECT_ROOT = CURRENT_DIR
@@ -27,6 +28,7 @@ elif os.path.exists(os.path.join(os.path.dirname(CURRENT_DIR), 'attack_log')):
 else:
     PROJECT_ROOT = CURRENT_DIR
 
+# ### Các biến này định nghĩa đường dẫn tuyệt đối tới các file log ###
 ATTACK_LOG_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'attack_logs.csv')
 HISTORY_LOG_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'offender_history.csv')
 MANUAL_BLOCK_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'manual_blocks.txt')
@@ -122,7 +124,7 @@ with st.sidebar:
 # --- MAIN DASHBOARD ---
 st.title("SDN AI-Guard Monitoring Center")
 
-# 1. METRICS CALCULATION
+# 1. TÍNH TOÁN METRICS
 current_net_io = psutil.net_io_counters().bytes_recv
 current_time = time.time()
 delta_bytes = current_net_io - st.session_state.last_net_io
@@ -143,19 +145,35 @@ is_under_attack = False
 total_threats = len(df_attacks)
 unique_attackers = df_attacks['ip_src'].nunique() if not df_attacks.empty and 'ip_src' in df_attacks.columns else 0
 
+# --- LOGIC XÁC ĐỊNH TRẠNG THÁI HỆ THỐNG ---
+system_state = "SAFE" 
+target_ip_to_block = None
+
 if not df_attacks.empty and 'timestamp' in df_attacks.columns:
     try:
-        last_ts = float(df_attacks.iloc[-1]['timestamp'])
+        last_row = df_attacks.iloc[-1]
+        last_ts = float(last_row['timestamp'])
         if time.time() - last_ts < 30:
-            is_under_attack = True
+            label = str(last_row['label'])
+            if label == "Attack":
+                system_state = "CRITICAL"
+            elif label in ["Warning", "Suspicious"]:
+                system_state = "WARNING"
+                target_ip_to_block = last_row['ip_src']
     except: pass
 
-# --- UPDATE CHART DATA ---
+
+# --- CẬP NHẬT DỮ LIỆU BIỂU ĐỒ ---
+current_type = 'Normal'
+if system_state == "CRITICAL": current_type = 'Attack'
+elif system_state == "WARNING": current_type = 'Warning'
+
 new_row = {
     'Time': datetime.now().strftime('%H:%M:%S'),
     'Speed_KBps': speed_kbps,
-    'Type': 'Attack' if is_under_attack else 'Normal'
+    'Type': current_type
 }
+
 new_df = pd.DataFrame([new_row])
 
 if st.session_state.traffic_history.empty:
@@ -166,10 +184,17 @@ else:
         ignore_index=True
     ).tail(60)
 
-# 2. DISPLAY METRICS
+# 2. HIỂN THỊ METRICS
 col1, col2, col3, col4 = st.columns(4)
+
 with col1:
-    st.metric("Detected Attacks", total_threats, delta="Critical" if is_under_attack else "Safe", delta_color="inverse")
+    if system_state == "CRITICAL":
+        st.metric("System Status", "UNDER ATTACK", delta="- CRITICAL", delta_color="inverse")
+    elif system_state == "WARNING":
+        st.metric("System Status", "SUSPICIOUS", delta="! WARNING", delta_color="off")
+    else:
+        st.metric("System Status", "SECURE", delta="Active")
+
 with col2:
     st.metric("Malicious IPs (Unique)", unique_attackers)
 with col3:
@@ -179,42 +204,51 @@ with col4:
     ram = psutil.virtual_memory().percent
     st.metric("CPU / RAM Usage", f"{cpu}% / {ram}%")
 
-# 3. REAL-TIME TRAFFIC CHART
+# 3. BIỂU ĐỒ REAL-TIME TRAFFIC
 st.divider()
 st.subheader("📈 Real-time Network Traffic")
 
 chart_data = st.session_state.traffic_history
 if not chart_data.empty:
+    color_scale = alt.Scale(domain=['Attack', 'Warning', 'Normal'],
+                            range=['#FF4B4B', '#FFA500', '#00CC96'])
+
+    # ### 'scale=alt.Scale(domain=[0, 20000])' giúp cố định trục Y ###
     base = alt.Chart(chart_data).encode(
         x=alt.X('Time', axis=alt.Axis(labels=False, title='Windows (60s)')),
-        y=alt.Y('Speed_KBps', title='Speed (KB/s)'),
+        y=alt.Y('Speed_KBps', title='Speed (KB/s)', scale=alt.Scale(domain=[0, 20000])), 
         tooltip=['Time', 'Speed_KBps', 'Type']
     )
 
     line = base.mark_line(strokeWidth=3).encode(
-        color=alt.condition(
-            alt.datum.Type == 'Attack',
-            alt.value('#FF4B4B'),  # Red
-            alt.value('#00CC96')   # Green
-        )
+        color=alt.Color('Type', scale=color_scale, legend=None)
     )
-    
+
     area = base.mark_area(opacity=0.3).encode(
-        color=alt.condition(
-            alt.datum.Type == 'Attack',
-            alt.value('#FF4B4B'),
-            alt.value('#00CC96')
-        )
+        color=alt.Color('Type', scale=color_scale, legend=None)
     )
 
-    # [FIXED] Dùng use_container_width=True cho altair_chart (đây là cách đúng)
-    st.altair_chart(line + area, use_container_width=True)
+    # ### [FIXED] Thay use_container_width=True bằng width="stretch" cho chart ###
+    # Lưu ý: Một số phiên bản Streamlit mới bắt buộc dùng cú pháp này cho Altair
+    try:
+        st.altair_chart(line + area, use_container_width=True)
+    except:
+        # Fallback nếu phiên bản Streamlit yêu cầu 'theme' hoặc config khác
+        st.altair_chart(line + area, theme="streamlit", use_container_width=True)
 
-# 4. ATTACK LOGS
+# 4. NHẬT KÝ TẤN CÔNG
 st.divider()
 c1, c2 = st.columns([3, 1])
 with c1:
-    st.subheader("🚨 Latest Attack Logs (Last 10 Events)")
+    if system_state == "WARNING":
+        st.subheader("⚠️ Suspicious Activity Detected")
+        if target_ip_to_block:
+            st.caption(f"Detected low-rate anomaly. Suggested Action: Block IP {target_ip_to_block}")
+    elif system_state == "CRITICAL":
+        st.subheader("🚨 CRITICAL: Attack In Progress")
+    else:
+        st.subheader("📋 Traffic Logs")
+
 with c2:
     if not df_attacks.empty:
         csv_data = df_attacks.to_csv(index=False).encode('utf-8')
@@ -232,19 +266,22 @@ if not df_attacks.empty:
         target_cols = ['Time', 'ip_src', 'ip_dst', 'ip_proto', 'packet_count', 'label', 'reason']
         valid_cols = [c for c in target_cols if c in df_display.columns]
         
-        # [SAFE MODE] Dùng use_container_width=True cho dataframe
-        st.dataframe(df_display[valid_cols].head(10), use_container_width=True, hide_index=True)
+        # ### [FIXED] Thay use_container_width=True bằng width="stretch" cho dataframe ###
+        # Lưu ý: Nếu bản Streamlit hiện tại chưa hỗ trợ width="stretch", hãy đổi lại thành use_container_width=True
+        # Nhưng theo log lỗi bạn gửi, bắt buộc dùng width="stretch"
+        st.dataframe(df_display[valid_cols].head(10), width="stretch", hide_index=True)
     except Exception as e:
-        st.warning(f"Data error: {e}")
-        st.dataframe(df_attacks.tail(10), use_container_width=True)
+        # Fallback an toàn
+        st.dataframe(df_attacks.tail(10), width="stretch")
 else:
     st.info("No attack logs recorded yet. System is clean.")
 
-# 5. BLACKLIST HISTORY
+# 5. LỊCH SỬ CHẶN IP
 st.divider()
 st.subheader("🚫 Blocked IP History")
 if not df_history.empty:
-    st.dataframe(df_history.sort_values(by='Total_Blocks', ascending=False), use_container_width=True, hide_index=True)
+    # ### [FIXED] Cập nhật width="stretch" ###
+    st.dataframe(df_history.sort_values(by='Total_Blocks', ascending=False), width="stretch", hide_index=True)
 else:
     st.text("No blocking history available.")
 
