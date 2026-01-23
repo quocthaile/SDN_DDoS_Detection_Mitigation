@@ -22,11 +22,15 @@ class SimpleMonitor13(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(SimpleMonitor13, self).__init__(*args, **kwargs)
         
-        # --- CẤU HÌNH HỆ THỐNG ---
         self.ENABLE_AI_PREDICT_LOG = True 
         self.STATUS_INTERVAL = 1.0
-        self.MIN_PPS_THRESHOLD = 120
-        self.PRED_LOCK_SECONDS = 2
+        
+        # [UPDATED] BỘ THAM SỐ NGƯỠNG MỚI (Tối ưu cho Video 4K & WSL2)
+        # Thay thế cho: self.MIN_PPS_THRESHOLD = 50
+        self.MIN_PPS_THRESHOLD = 150        # Tăng lên 150 để lọc nhiễu nền Windows
+        self.VOLUMETRIC_THRESHOLD = 4000    # Tăng lên 4000 để cho phép Video 4K (khoảng 2500pps)
+        self.AI_CONFIDENCE_THRESHOLD = 0.75 # Giảm xuống 0.75 để nhạy hơn với tấn công chậm
+        self.PRED_LOCK_SECONDS = 3          # Tăng thời gian khóa để tránh biểu đồ nhấp nháy
         
         self.firewall_enabled = True 
         
@@ -102,7 +106,6 @@ class SimpleMonitor13(app_manager.RyuApp):
             except Exception as e:
                 print(f"Error loading history: {e}")
 
-    # [UPDATED] Thêm cột Allowed_Attack_MBps
     def _init_traffic_monitor(self):
         with open(self.TRAFFIC_MONITOR_FILE, "w") as f:
             f.write("Timestamp,Blocked_MBps,Allowed_Attack_MBps,Benign_MBps\n")
@@ -411,9 +414,9 @@ class SimpleMonitor13(app_manager.RyuApp):
             self.flow_history[flow_key] = (packet_count, byte_count, current_time)
             mbps_current = bps_rate / 1024 / 1024
 
-            # [UPDATED] LOGIC PHÂN LOẠI TRAFFIC (3 LOẠI)
+            # [UPDATED] LOGIC PHÂN LOẠI TRAFFIC (3 LOẠI + VIDEO WHITELIST)
             
-            # 1. BLOCKED: Đã bị chặn (Priority >= 100)
+            # 1. BLOCKED (Priority >= 100)
             if stat.priority >= 100:
                 src_ip = stat.match.get('ipv4_src')
                 current_label = '1'
@@ -431,7 +434,6 @@ class SimpleMonitor13(app_manager.RyuApp):
                 self.active_flow_stats[flow_key] = {'rate': mbps_current, 'type': 'Blocked', 'ts': current_time}
                 continue 
 
-            # 2. Mặc định là BENIGN
             traffic_type = 'Benign' 
             
             if ip_proto == 1: local_summary['ICMP'] += 1
@@ -440,7 +442,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             local_summary['Total'] += 1
 
             icmp_type_stat = stat.match.get('icmpv4_type')
-            if ip_proto == 1 and icmp_type_stat == 0: # Reply
+            if ip_proto == 1 and icmp_type_stat == 0:
                 self.active_flow_stats[flow_key] = {'rate': mbps_current, 'type': 'Benign', 'ts': current_time}
                 continue
 
@@ -449,70 +451,86 @@ class SimpleMonitor13(app_manager.RyuApp):
             ip_dst = stat.match['ipv4_dst']
             if ip_dst in self.blocked_ips: continue
 
-            # 3. AI DETECTION
-            if pps_rate >= self.MIN_PPS_THRESHOLD:
-                icmp_type = 8 if ip_proto == 1 else 0
-                icmp_code = 0
-                flags = 0
-                features = np.array([[ip_proto, icmp_code, icmp_type, stat.duration_sec, stat.duration_nsec, 0, 0, flags, packet_count, byte_count, pps_rate, 0, bps_rate, 0]])
+            # [LOGIC MỚI] KIỂM TRA VIDEO/FILE & AI DETECTION
+            if pps_rate >= self.MIN_PPS_THRESHOLD: # > 150 PPS
+                # Tính kích thước gói tin trung bình
+                avg_pkt_size = bps_rate / pps_rate if pps_rate > 0 else 0
+                
+                # Rule 1: Video/File Transfer (Gói tin lớn > 1000 bytes) -> ALLOW
+                if avg_pkt_size > 1000:
+                    traffic_type = 'Benign' # Cho qua
+                    
+                # Rule 2: Volumetric Flood (> 4000 PPS) -> BLOCK
+                elif pps_rate > self.VOLUMETRIC_THRESHOLD:
+                    verdict = "ATTACK"
+                    reason = f"Volumetric Flood > {self.VOLUMETRIC_THRESHOLD}pps"
+                    if self.firewall_enabled:
+                        traffic_type = 'Blocked'
+                        self._block_ip(ev.msg.datapath, ip_src, ip_dst, ip_proto, reason=reason)
+                        self._log_attack(ip_src, ip_dst, ip_proto, packet_count, label="Attack", reason=reason)
+                    else:
+                        traffic_type = 'Allowed_Attack'
 
-                verdict = "Normal"
-                display_priority = 0
-                reason = self._get_attack_reason(ip_proto, pps_rate)
-                probs = [1.0, 0.0]
-                conf_score = 0.0
+                # Rule 3: AI Check (Kích thước gói nhỏ/trung bình, 150 < PPS < 4000)
+                else:
+                    icmp_type = 8 if ip_proto == 1 else 0
+                    icmp_code = 0
+                    flags = 0
+                    features = np.array([[ip_proto, icmp_code, icmp_type, stat.duration_sec, stat.duration_nsec, 0, 0, flags, packet_count, byte_count, pps_rate, 0, bps_rate, 0]])
 
-                if self.model:
-                    try:
-                        features_scaled = self.scaler.transform(features)
-                        probs = self.model.predict_proba(features_scaled)[0]
-                        conf_score = probs[1]
-                        
-                        if conf_score >= 0.8 or pps_rate > 500:
-                            verdict = "ATTACK"
-                            display_priority = 3
-                            if conf_score >= 0.8: reason = f"AI Detected ({reason})"
-                            else: reason = f"Volumetric Flood > 500pps"
+                    verdict = "Normal"
+                    display_priority = 0
+                    reason = self._get_attack_reason(ip_proto, pps_rate)
+                    probs = [1.0, 0.0]
+                    conf_score = 0.0
+
+                    if self.model:
+                        try:
+                            features_scaled = self.scaler.transform(features)
+                            probs = self.model.predict_proba(features_scaled)[0]
+                            conf_score = probs[1]
                             
-                            # LOGIC MỚI:
-                            if self.firewall_enabled:
-                                # Nếu Firewall ON -> Chặn -> Đánh dấu là Blocked
-                                traffic_type = 'Blocked'
-                                self._block_ip(ev.msg.datapath, ip_src, ip_dst, ip_proto, reason=reason)
-                                self._log_attack(ip_src, ip_dst, ip_proto, packet_count, label="Attack", reason=reason)
-                                self._log_full_dataset(dpid, ip_src, ip_dst, ip_proto, stat, pps_rate, bps_rate, '1')
-                            else:
-                                # Nếu Firewall OFF -> Không chặn -> Đánh dấu là Allowed Attack
-                                traffic_type = 'Allowed_Attack'
-                                # Vẫn ghi log AI Predict nhưng không ghi log attack chính để tránh rác
+                            # [UPDATED] Ngưỡng AI mới 0.75
+                            if conf_score >= self.AI_CONFIDENCE_THRESHOLD:
+                                verdict = "ATTACK"
+                                display_priority = 3
+                                reason = f"AI Detected ({reason})"
                                 
-                        elif pps_rate > self.MIN_PPS_THRESHOLD or (conf_score > 0.5): 
-                            verdict = "WARNING"
-                            display_priority = 2
-                            reason = f"Elevated Traffic ({int(pps_rate)} pps)"
-                            if self.firewall_enabled:
-                                self._log_attack(ip_src, ip_dst, ip_proto, packet_count, label="Warning", reason=reason)
-                        else:
-                            verdict = "Normal"
-                            display_priority = 1
+                                if self.firewall_enabled:
+                                    traffic_type = 'Blocked'
+                                    self._block_ip(ev.msg.datapath, ip_src, ip_dst, ip_proto, reason=reason)
+                                    self._log_attack(ip_src, ip_dst, ip_proto, packet_count, label="Attack", reason=reason)
+                                    self._log_full_dataset(dpid, ip_src, ip_dst, ip_proto, stat, pps_rate, bps_rate, '1')
+                                else:
+                                    traffic_type = 'Allowed_Attack'
+                                    
+                            elif pps_rate > self.MIN_PPS_THRESHOLD or (conf_score > 0.5): 
+                                verdict = "WARNING"
+                                display_priority = 2
+                                reason = f"Elevated Traffic ({int(pps_rate)} pps)"
+                                if self.firewall_enabled:
+                                    self._log_attack(ip_src, ip_dst, ip_proto, packet_count, label="Warning", reason=reason)
+                            else:
+                                verdict = "Normal"
+                                display_priority = 1
 
-                        self._log_ai_prediction(ip_src, ip_dst, ip_proto, pps_rate, probs, verdict, "MONITOR", reason)
+                            self._log_ai_prediction(ip_src, ip_dst, ip_proto, pps_rate, probs, verdict, "MONITOR", reason)
 
-                        now_ts = time.time()
-                        if (now_ts >= self.pred_lock_until) or (display_priority >= self.pred_lock_priority):
-                            self.latest_pred = {
-                                'src': ip_src, 'dst': ip_dst, 'proto': ip_proto,
-                                'rate': f"{pps_rate:.0f}",
-                                'result': verdict,
-                                'conf': f"{conf_score:.2f}",
-                                'reason': reason,
-                                'priority': display_priority
-                            }
-                            if display_priority >= 2:
-                                self.pred_lock_until = now_ts + self.PRED_LOCK_SECONDS
-                                self.pred_lock_priority = display_priority
-                    except Exception as e: 
-                        print(f"Error in detection logic: {e}")
+                            now_ts = time.time()
+                            if (now_ts >= self.pred_lock_until) or (display_priority >= self.pred_lock_priority):
+                                self.latest_pred = {
+                                    'src': ip_src, 'dst': ip_dst, 'proto': ip_proto,
+                                    'rate': f"{pps_rate:.0f}",
+                                    'result': verdict,
+                                    'conf': f"{conf_score:.2f}",
+                                    'reason': reason,
+                                    'priority': display_priority
+                                }
+                                if display_priority >= 2:
+                                    self.pred_lock_until = now_ts + self.PRED_LOCK_SECONDS
+                                    self.pred_lock_priority = display_priority
+                        except Exception as e: 
+                            print(f"Error in detection logic: {e}")
 
             self.active_flow_stats[flow_key] = {'rate': mbps_current, 'type': traffic_type, 'ts': current_time}
         
@@ -574,9 +592,12 @@ class SimpleMonitor13(app_manager.RyuApp):
         for k in keys_to_remove: del self.flow_history[k]
         self._update_offender_history(ip_src, proto)
         offense_count = self.offender_history[ip_src]['count']
-        if offense_count == 1: duration = 60
-        elif offense_count == 2: duration = 300
-        else: duration = 1800
+        
+        # [UPDATED] Thời gian block ngắn hơn cho Demo
+        if offense_count == 1: duration = 30
+        elif offense_count == 2: duration = 60
+        else: duration = 120
+        
         self.blocked_ips[ip_src] = {
             'unlock_time': current_time + duration,
             'victim': ip_dst, 
