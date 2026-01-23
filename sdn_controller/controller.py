@@ -14,7 +14,7 @@ from sklearn.preprocessing import StandardScaler
 import time
 import os
 import sys
-import shutil # Dùng cho Atomic Write
+import shutil
 
 class SimpleMonitor13(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -22,24 +22,23 @@ class SimpleMonitor13(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(SimpleMonitor13, self).__init__(*args, **kwargs)
         
-        # --- CẤU HÌNH HỆ THỐNG (QUAN TRỌNG) ---
+        # --- CẤU HÌNH HỆ THỐNG ---
         self.ENABLE_AI_PREDICT_LOG = True 
         self.STATUS_INTERVAL = 1.0
         self.MIN_PPS_THRESHOLD = 50
-        self.PRED_LOCK_SECONDS = 2 # [FIX] Đảm bảo biến này luôn được định nghĩa
+        self.PRED_LOCK_SECONDS = 2
+        
+        self.firewall_enabled = True 
         
         self.mac_to_port = {}
         self.datapaths = {}
         
         self.monitor_thread = hub.spawn(self._monitor)
         
-        # Lưu trữ trạng thái
         self.blocked_ips = {}           
         self.flow_history = {} 
         self.traffic_summary = {'TCP': 0, 'UDP': 0, 'ICMP': 0, 'Total': 0}
         self.switch_stats = {}
-        
-        # Sổ cái lưu tốc độ từng Flow
         self.active_flow_stats = {}
         
         self.latest_pred = {
@@ -50,7 +49,7 @@ class SimpleMonitor13(app_manager.RyuApp):
         self.pred_lock_until = 0
         self.pred_lock_priority = -1
         
-        # --- CẤU HÌNH ĐƯỜNG DẪN TUYỆT ĐỐI ---
+        # --- CẤU HÌNH ĐƯỜNG DẪN ---
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         LOG_DIR = os.path.abspath(os.path.join(BASE_DIR, "../attack_log"))
         
@@ -64,13 +63,14 @@ class SimpleMonitor13(app_manager.RyuApp):
         self.AI_PREDICT_LOG_FILE = os.path.join(LOG_DIR, "ai_predict.csv")
         self.TRAFFIC_MONITOR_FILE = os.path.join(LOG_DIR, "traffic_monitor.csv")
         self.DEBUG_FILE = "debug_ai_prediction.log"
+        self.FIREWALL_STATUS_FILE = os.path.join(LOG_DIR, "firewall_status.txt")
         
-        # [FIX] Load lịch sử cũ để tính thời gian chặn tăng dần
         self.offender_history = {}
         self._load_offender_history()
         
         self._init_files()
         self._init_traffic_monitor()
+        self._init_firewall_status()
 
         print("Loading AI Model...")
         try:
@@ -88,7 +88,6 @@ class SimpleMonitor13(app_manager.RyuApp):
             self.model = None
 
     def _load_offender_history(self):
-        """Tải lại lịch sử vi phạm từ file CSV khi khởi động"""
         if os.path.exists(self.HISTORY_FILE):
             try:
                 if os.path.getsize(self.HISTORY_FILE) > 0:
@@ -96,23 +95,17 @@ class SimpleMonitor13(app_manager.RyuApp):
                     for _, row in df.iterrows():
                         ip = str(row['Attacker_IP'])
                         count = int(row['Total_Blocks'])
-                        # Xử lý chuỗi methods an toàn
                         m_str = str(row['Attack_Methods'])
                         methods = set(m_str.split('+')) if m_str else set()
-                        
-                        self.offender_history[ip] = {
-                            'count': count,
-                            'methods': methods,
-                            'last': row['Last_Seen']
-                        }
+                        self.offender_history[ip] = {'count': count, 'methods': methods, 'last': row['Last_Seen']}
                     print(f"-> Loaded history for {len(self.offender_history)} IPs.")
             except Exception as e:
                 print(f"Error loading history: {e}")
 
+    # [UPDATED] Thêm cột Allowed_Attack_MBps
     def _init_traffic_monitor(self):
-        # Tạo file mới mỗi lần khởi động lại
         with open(self.TRAFFIC_MONITOR_FILE, "w") as f:
-            f.write("Timestamp,Attack_MBps,Benign_MBps\n")
+            f.write("Timestamp,Blocked_MBps,Allowed_Attack_MBps,Benign_MBps\n")
         try: os.chmod(self.TRAFFIC_MONITOR_FILE, 0o666)
         except: pass
 
@@ -136,6 +129,13 @@ class SimpleMonitor13(app_manager.RyuApp):
             with open(self.AI_PREDICT_LOG_FILE, "w") as f:
                 f.write(headers)
             try: os.chmod(self.AI_PREDICT_LOG_FILE, 0o666)
+            except: pass
+
+    def _init_firewall_status(self):
+        if not os.path.exists(self.FIREWALL_STATUS_FILE):
+            with open(self.FIREWALL_STATUS_FILE, "w") as f:
+                f.write("ON")
+            try: os.chmod(self.FIREWALL_STATUS_FILE, 0o666)
             except: pass
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -177,8 +177,9 @@ class SimpleMonitor13(app_manager.RyuApp):
         if eth.ethertype == ether_types.ETH_TYPE_IP:
             ip_pkt = pkt.get_protocol(ipv4.ipv4)
             src_ip = ip_pkt.src
-            # Nếu IP đã bị chặn, return ngay lập tức (DROP tại Controller)
-            if src_ip in self.blocked_ips:
+            
+            # Chỉ chặn nếu Firewall đang BẬT
+            if self.firewall_enabled and src_ip in self.blocked_ips:
                 return 
 
         dst = eth.dst
@@ -239,89 +240,104 @@ class SimpleMonitor13(app_manager.RyuApp):
             if datapath.id in self.switch_stats:
                 del self.switch_stats[datapath.id]
 
+    def _clear_all_blocks(self):
+        print("!!! FIREWALL DISABLED: Clearing all Drop Rules !!!")
+        for datapath in self.datapaths.values():
+            ofproto = datapath.ofproto
+            parser = datapath.ofproto_parser
+            mod = parser.OFPFlowMod(
+                datapath=datapath,
+                command=ofproto.OFPFC_DELETE,
+                out_port=ofproto.OFPP_ANY,
+                out_group=ofproto.OFPG_ANY,
+                priority=1000
+            )
+            datapath.send_msg(mod)
+            datapath.send_msg(parser.OFPBarrierRequest(datapath))
+
+    def _check_firewall_file(self):
+        try:
+            if os.path.exists(self.FIREWALL_STATUS_FILE):
+                with open(self.FIREWALL_STATUS_FILE, "r") as f:
+                    content = f.read().strip().upper()
+                new_state = (content == "ON")
+                if self.firewall_enabled and not new_state:
+                    self.firewall_enabled = False
+                    self.blocked_ips.clear()
+                    self._clear_all_blocks()
+                elif not self.firewall_enabled and new_state:
+                    self.firewall_enabled = True
+                    print("!!! FIREWALL ENABLED !!!")
+        except Exception as e:
+            print(f"Error checking firewall status: {e}")
+
     def _monitor(self):
         while True:
-            current_ts = datetime.now().timestamp()
+            self._check_firewall_file()
             
-            # 1. [SYNC FIX] Kiểm tra nếu file lịch sử bị xóa bởi Dashboard
             if not os.path.exists(self.HISTORY_FILE) and len(self.offender_history) > 0:
-                print("-> Detected history cleared by Dashboard. Resetting Controller memory.")
-                self.offender_history = {} # Xóa RAM để đồng bộ
+                self.offender_history = {} 
 
-            # 2. Mở khóa IP hết hạn
+            current_ts = datetime.now().timestamp()
             expired_ips = [ip for ip, data in self.blocked_ips.items() if current_ts > data['unlock_time']]
             for ip in expired_ips:
                 del self.blocked_ips[ip]
 
-            # 3. Reset cảnh báo CLI
             if time.time() >= self.pred_lock_until:
                 self.pred_lock_priority = -1
                 self.latest_pred['priority'] = -1
             
-            # 4. Gửi yêu cầu lấy thống kê
             for dp in self.datapaths.values():
                 self._request_stats(dp)
-                self._check_manual_blocks(dp)
+                if self.firewall_enabled:
+                    self._check_manual_blocks(dp)
             
-            # Chờ Switch phản hồi
             time.sleep(1.0)
             
-            # 5. TÍNH TOÁN BĂNG THÔNG REAL-TIME (AGGREGATION)
             monitor_ts = time.time()
-            total_attack = 0.0
+            total_blocked = 0.0
+            total_allowed_attack = 0.0
             total_benign = 0.0
             
-            # Xóa các flow cũ (đã ngắt kết nối hoặc timeout) khỏi sổ cái
+            # [UPDATED] Tổng hợp 3 loại traffic
             for key in list(self.active_flow_stats.keys()):
                 info = self.active_flow_stats[key]
                 if monitor_ts - info['ts'] > 3.0:
                     del self.active_flow_stats[key]
                 else:
-                    if info['type'] == 'Attack': total_attack += info['rate']
+                    if info['type'] == 'Blocked': total_blocked += info['rate']
+                    elif info['type'] == 'Allowed_Attack': total_allowed_attack += info['rate']
                     else: total_benign += info['rate']
 
-            # [FIX FLICKERING] Ghi log CSV bằng Atomic Write
             try:
                 ts_str = datetime.now().strftime('%H:%M:%S')
-                # Ghi vào file tạm trước
-                temp_file = self.TRAFFIC_MONITOR_FILE + ".tmp"
+                if not os.path.exists(self.TRAFFIC_MONITOR_FILE):
+                    with open(self.TRAFFIC_MONITOR_FILE, "w") as f:
+                        f.write("Timestamp,Blocked_MBps,Allowed_Attack_MBps,Benign_MBps\n")
                 
-                # Mở file chính để append nhưng dùng flush để đẩy data xuống disk ngay
                 with open(self.TRAFFIC_MONITOR_FILE, "a") as f:
-                    f.write(f"{ts_str},{total_attack:.4f},{total_benign:.4f}\n")
+                    f.write(f"{ts_str},{total_blocked:.4f},{total_allowed_attack:.4f},{total_benign:.4f}\n")
                     f.flush()
-                    os.fsync(f.fileno()) # Bắt buộc hệ điều hành ghi đĩa
+                    os.fsync(f.fileno())
             except: pass
 
             self._print_dashboard()
 
     def _check_manual_blocks(self, datapath):
-        # Kiểm tra file chặn thủ công
         if not os.path.exists(self.MANUAL_BLOCK_FILE): return
-        
         ips_to_block = []
         try:
-            # Đọc file
             with open(self.MANUAL_BLOCK_FILE, "r") as f:
                 lines = f.readlines()
-            
             if lines:
                 for line in lines:
                     ip = line.strip()
                     if ip: ips_to_block.append(ip)
-                
-                # Xóa file ngay sau khi đọc (Mở mode 'w' để xóa trắng)
-                with open(self.MANUAL_BLOCK_FILE, "w") as f: 
-                    f.write("")
-        except Exception as e:
-            print(f"Error reading manual blocks: {e}")
-            return
+                with open(self.MANUAL_BLOCK_FILE, "w") as f: f.write("")
+        except: return
 
-        # Thực thi chặn
         for ip in ips_to_block:
             if ip not in self.blocked_ips:
-                print(f"\n[MANUAL COMMAND] Blocking IP: {ip}")
-                # Gọi hàm chặn với lý do Manual-Block, Protocol=0 (ALL)
                 self._block_ip(datapath, ip, "Manual-Block", 0, reason="Manual-Block")
 
     def _request_stats(self, datapath):
@@ -345,14 +361,12 @@ class SimpleMonitor13(app_manager.RyuApp):
             icmp_code = stat.match.get('icmpv4_code') or 0
             icmp_type = stat.match.get('icmpv4_type') or 0
             flow_id = f"{src}-{dst}-{proto}"
-            
             row = [
                 timestamp, dpid, flow_id, src, 0, dst, 0, proto,
                 icmp_code, icmp_type, stat.duration_sec, stat.duration_nsec,
                 stat.idle_timeout, stat.hard_timeout, 0, stat.packet_count, stat.byte_count,
                 f"{pps:.2f}", f"{pps_nsec:.9f}", f"{bps:.2f}", f"{bps_nsec:.9f}", label
             ]
-            
             with open(self.DDOS_DATASET_FILE, "a") as f:
                 f.write(",".join(map(str, row)) + "\n")
         except: pass
@@ -367,10 +381,8 @@ class SimpleMonitor13(app_manager.RyuApp):
 
         for stat in body:
             if stat.priority == 0: continue
-            
             ip_proto = stat.match.get('ip_proto', 0)
             
-            # Key định danh Flow
             if stat.priority >= 100:
                 src_key = stat.match.get('ipv4_src', '0.0.0.0')
                 dst_key = 'BLOCK'
@@ -399,18 +411,15 @@ class SimpleMonitor13(app_manager.RyuApp):
             self.flow_history[flow_key] = (packet_count, byte_count, current_time)
             mbps_current = bps_rate / 1024 / 1024
 
-            # --- PHÂN LOẠI TRAFFIC VÀO SỔ CÁI ---
+            # [UPDATED] LOGIC PHÂN LOẠI TRAFFIC (3 LOẠI)
             
-            # [CASE 1] FLOW ĐANG BỊ CHẶN (ATTACK)
+            # 1. BLOCKED: Đã bị chặn (Priority >= 100)
             if stat.priority >= 100:
                 src_ip = stat.match.get('ipv4_src')
-                
-                # Logic Dataset
                 current_label = '1'
                 if src_ip in self.blocked_ips:
                     if self.blocked_ips[src_ip].get('reason') == "Manual-Block":
                         current_label = 'MANUALBLOCK'
-                
                 dst_ip = stat.match.get('ipv4_dst', '0.0.0.0')
                 self._log_full_dataset(dpid, src_ip, dst_ip, ip_proto, stat, 0, 0, current_label)
                 
@@ -419,11 +428,10 @@ class SimpleMonitor13(app_manager.RyuApp):
                 elif ip_proto == 17: local_summary['UDP'] += 1
                 local_summary['Total'] += 1
                 
-                # Cập nhật sổ cái: Loại Attack
-                self.active_flow_stats[flow_key] = {'rate': mbps_current, 'type': 'Attack', 'ts': current_time}
+                self.active_flow_stats[flow_key] = {'rate': mbps_current, 'type': 'Blocked', 'ts': current_time}
                 continue 
 
-            # [CASE 2] FLOW BÌNH THƯỜNG (BENIGN)
+            # 2. Mặc định là BENIGN
             traffic_type = 'Benign' 
             
             if ip_proto == 1: local_summary['ICMP'] += 1
@@ -432,9 +440,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             local_summary['Total'] += 1
 
             icmp_type_stat = stat.match.get('icmpv4_type')
-            
-            # Reply packet -> Benign
-            if ip_proto == 1 and icmp_type_stat == 0:
+            if ip_proto == 1 and icmp_type_stat == 0: # Reply
                 self.active_flow_stats[flow_key] = {'rate': mbps_current, 'type': 'Benign', 'ts': current_time}
                 continue
 
@@ -443,7 +449,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             ip_dst = stat.match['ipv4_dst']
             if ip_dst in self.blocked_ips: continue
 
-            # AI Detection
+            # 3. AI DETECTION
             if pps_rate >= self.MIN_PPS_THRESHOLD:
                 icmp_type = 8 if ip_proto == 1 else 0
                 icmp_code = 0
@@ -464,20 +470,28 @@ class SimpleMonitor13(app_manager.RyuApp):
                         
                         if conf_score >= 0.8 or pps_rate > 500:
                             verdict = "ATTACK"
-                            traffic_type = 'Attack' # Đánh dấu Attack
                             display_priority = 3
                             if conf_score >= 0.8: reason = f"AI Detected ({reason})"
                             else: reason = f"Volumetric Flood > 500pps"
                             
-                            self._block_ip(ev.msg.datapath, ip_src, ip_dst, ip_proto, reason=reason)
-                            self._log_attack(ip_src, ip_dst, ip_proto, packet_count, label="Attack", reason=reason)
-                            self._log_full_dataset(dpid, ip_src, ip_dst, ip_proto, stat, pps_rate, bps_rate, '1')
-
+                            # LOGIC MỚI:
+                            if self.firewall_enabled:
+                                # Nếu Firewall ON -> Chặn -> Đánh dấu là Blocked
+                                traffic_type = 'Blocked'
+                                self._block_ip(ev.msg.datapath, ip_src, ip_dst, ip_proto, reason=reason)
+                                self._log_attack(ip_src, ip_dst, ip_proto, packet_count, label="Attack", reason=reason)
+                                self._log_full_dataset(dpid, ip_src, ip_dst, ip_proto, stat, pps_rate, bps_rate, '1')
+                            else:
+                                # Nếu Firewall OFF -> Không chặn -> Đánh dấu là Allowed Attack
+                                traffic_type = 'Allowed_Attack'
+                                # Vẫn ghi log AI Predict nhưng không ghi log attack chính để tránh rác
+                                
                         elif pps_rate > self.MIN_PPS_THRESHOLD or (conf_score > 0.5): 
                             verdict = "WARNING"
                             display_priority = 2
                             reason = f"Elevated Traffic ({int(pps_rate)} pps)"
-                            self._log_attack(ip_src, ip_dst, ip_proto, packet_count, label="Warning", reason=reason)
+                            if self.firewall_enabled:
+                                self._log_attack(ip_src, ip_dst, ip_proto, packet_count, label="Warning", reason=reason)
                         else:
                             verdict = "Normal"
                             display_priority = 1
@@ -497,16 +511,10 @@ class SimpleMonitor13(app_manager.RyuApp):
                             if display_priority >= 2:
                                 self.pred_lock_until = now_ts + self.PRED_LOCK_SECONDS
                                 self.pred_lock_priority = display_priority
-
                     except Exception as e: 
                         print(f"Error in detection logic: {e}")
 
-            # Cập nhật Sổ cái
-            self.active_flow_stats[flow_key] = {
-                'rate': mbps_current,
-                'type': traffic_type,
-                'ts': current_time
-            }
+            self.active_flow_stats[flow_key] = {'rate': mbps_current, 'type': traffic_type, 'ts': current_time}
         
         self.switch_stats[dpid] = local_summary
         total = {'TCP': 0, 'UDP': 0, 'ICMP': 0, 'Total': 0}
@@ -543,25 +551,16 @@ class SimpleMonitor13(app_manager.RyuApp):
         proto_map = {1: 'ICMP', 6: 'TCP', 17: 'UDP'}
         proto_name = proto_map.get(proto, 'UNK')
         timestamp = datetime.now().strftime('%H:%M:%S')
-        
         if ip_src not in self.offender_history:
             self.offender_history[ip_src] = {'count': 0, 'methods': set(), 'last': timestamp}
-        
         self.offender_history[ip_src]['count'] += 1
         self.offender_history[ip_src]['methods'].add(proto_name)
         self.offender_history[ip_src]['last'] = timestamp
-        
-        # Ghi file lịch sử
         try:
             data_list = []
             for ip, info in self.offender_history.items():
                 methods_str = "+".join(list(info['methods']))
-                data_list.append({
-                    'Attacker_IP': ip, 
-                    'Total_Blocks': info['count'], 
-                    'Attack_Methods': methods_str, 
-                    'Last_Seen': info['last']
-                })
+                data_list.append({'Attacker_IP': ip, 'Total_Blocks': info['count'], 'Attack_Methods': methods_str, 'Last_Seen': info['last']})
             df = pd.DataFrame(data_list)
             df.to_csv(self.HISTORY_FILE, index=False)
             os.chmod(self.HISTORY_FILE, 0o666)
@@ -569,22 +568,15 @@ class SimpleMonitor13(app_manager.RyuApp):
 
     def _block_ip(self, datapath, ip_src, ip_dst, proto, reason="Unknown"):
         current_time = datetime.now().timestamp()
-        
         if ip_src in self.blocked_ips:
             if current_time < self.blocked_ips[ip_src]['unlock_time']: return 
-
         keys_to_remove = [k for k in self.flow_history if k[1] == ip_src]
         for k in keys_to_remove: del self.flow_history[k]
-
         self._update_offender_history(ip_src, proto)
-        
-        # [QUAN TRỌNG] Lấy số lần vi phạm từ lịch sử ĐÃ LOAD
         offense_count = self.offender_history[ip_src]['count']
-        
         if offense_count == 1: duration = 60
         elif offense_count == 2: duration = 300
         else: duration = 1800
-            
         self.blocked_ips[ip_src] = {
             'unlock_time': current_time + duration,
             'victim': ip_dst, 
@@ -592,11 +584,9 @@ class SimpleMonitor13(app_manager.RyuApp):
             'duration': duration,
             'reason': reason
         }
-        
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=ip_src)
-        
         mod_del = parser.OFPFlowMod(
             datapath=datapath,
             command=ofproto.OFPFC_DELETE,
@@ -606,7 +596,6 @@ class SimpleMonitor13(app_manager.RyuApp):
         )
         datapath.send_msg(mod_del)
         datapath.send_msg(parser.OFPBarrierRequest(datapath))
-        
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_CLEAR_ACTIONS, [])]
         mod_add = parser.OFPFlowMod(
             datapath=datapath, 
@@ -617,6 +606,13 @@ class SimpleMonitor13(app_manager.RyuApp):
             hard_timeout=duration
         )
         datapath.send_msg(mod_add)
+
+    def _write_debug_log(self, src, dst, proto, rate, reason, result, action):
+        try:
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            line = f"{timestamp},{src},{dst},{proto},{rate:.0f},{reason},{result},{action}\n"
+            with open(self.DEBUG_FILE, "a") as f: f.write(line)
+        except: pass
 
     def _print_dashboard(self):
         sys.stdout.write("\033[H\033[J")
@@ -635,7 +631,8 @@ class SimpleMonitor13(app_manager.RyuApp):
             print(f"║ {color_code}[{label}]\033[0m {info_text}{' ' * padding} ║")
 
         print(f"╔{'═'*(W-2)}╗")
-        title = "SDN AI-GUARD DASHBOARD"; time_str = f"Time: {now}"
+        fw_status = "ON" if self.firewall_enabled else "OFF"
+        title = f"SDN AI-GUARD [FW: {fw_status}]"; time_str = f"Time: {now}"
         gap = IW - len(title) - len(time_str)
         if gap < 0: gap = 1
         print(f"║ {title}{' '*gap}{time_str} ║")
@@ -646,11 +643,14 @@ class SimpleMonitor13(app_manager.RyuApp):
         p_line(stats_msg)
         h_line()
         
+        if not self.firewall_enabled:
+            p_alert_line("MONITORING", "Firewall OFF - Passive Detection Mode", "\033[93m")
+            h_line()
+        
         p = self.latest_pred
         res = p['result']
         p_line("REAL-TIME INSPECTION (AI + Rule Hybrid)")
         p_line(f"Source: {p['src']:<15}  ->  Dest: {p['dst']:<15}")
-        
         if res == "ATTACK":
             info = f"PPS: {p['rate']} | Conf: {p['conf']} | {p['reason']}"
             p_alert_line("ATTACK", info, "\033[91m")
@@ -660,35 +660,35 @@ class SimpleMonitor13(app_manager.RyuApp):
         else:
             info = f"Proto: {p['proto']} | Rate: {p['rate']} pps"
             p_alert_line("NORMAL", info, "\033[92m")
-
         h_line()
-
-        p_line("CURRENTLY BLOCKED (Mitigation Active)")
-        if not self.blocked_ips:
-            p_line("[ No active threats blocked ]")
-        else:
-            current_ts = datetime.now().timestamp()
-            count = 0
-            header = f"   {'IP Address':<15} | {'Time Left':<9} | {'Proto':<5} | {'Reason'}"
-            p_line(header)
-            p_line("-" * (IW-2))
-            for ip, data in self.blocked_ips.items():
-                if count >= 5:
-                    p_line(f"... (+{len(self.blocked_ips)-5} others)")
-                    break
-                rem = int(data['unlock_time'] - current_ts)
-                duration = data.get('duration', 60)
-                reason = data.get('reason', 'Unknown')
-                proto_num = data.get('proto', 0)
-                proto_map = {1: 'ICMP', 6: 'TCP', 17: 'UDP', 0: 'ALL'}
-                proto_str = proto_map.get(proto_num, str(proto_num))
-                if len(reason) > 25: reason = reason[:22] + "..."
-                if rem > 0:
-                    time_display = f"{rem}s/{duration}s"
-                    row = f"🚫 {ip:<15} | {time_display:<9} | {proto_str:<5} | {reason}"
-                    p_line(row)
-                    count += 1
-        h_line()
+        
+        if self.firewall_enabled:
+            p_line("CURRENTLY BLOCKED (Mitigation Active)")
+            if not self.blocked_ips:
+                p_line("[ No active threats blocked ]")
+            else:
+                current_ts = datetime.now().timestamp()
+                count = 0
+                header = f"   {'IP Address':<15} | {'Time Left':<9} | {'Proto':<5} | {'Reason'}"
+                p_line(header)
+                p_line("-" * (IW-2))
+                for ip, data in self.blocked_ips.items():
+                    if count >= 5:
+                        p_line(f"... (+{len(self.blocked_ips)-5} others)")
+                        break
+                    rem = int(data['unlock_time'] - current_ts)
+                    duration = data.get('duration', 60)
+                    reason = data.get('reason', 'Unknown')
+                    proto_num = data.get('proto', 0)
+                    proto_map = {1: 'ICMP', 6: 'TCP', 17: 'UDP', 0: 'ALL'}
+                    proto_str = proto_map.get(proto_num, str(proto_num))
+                    if len(reason) > 25: reason = reason[:22] + "..."
+                    if rem > 0:
+                        time_display = f"{rem}s/{duration}s"
+                        row = f"🚫 {ip:<15} | {time_display:<9} | {proto_str:<5} | {reason}"
+                        p_line(row)
+                        count += 1
+            h_line()
 
         p_line("TOP OFFENDERS (History)")
         if not self.offender_history:
