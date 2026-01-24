@@ -31,9 +31,6 @@ pip install seaborn streamlit plotly watchdog
 # Thư viện lấy thông số hệ thống, server
 pip install psutil flask flask-cors webob routes oslo.config msgpack netaddr "dnspython<2.0.0"
 
-# Kích hoạt môi trường
-source ~/SDN_DDoS_Detection_Mitigation/env/bin/activate
-cd ~/SDN_DDoS_Detection_Mitigation/sdn_controller/
 
 
 # ================================ Plot dashboard ===================================
@@ -43,6 +40,8 @@ streamlit run dashboard.py
   Local URL: http://localhost:8501
   Network URL: http://172.28.43.238:8501
 
+# h2 lắng nghe dữ liệu udp
+h2 iperf -s -u &
 
-
-
+#h1 truyền sang h2
+h1 iperf -c 10.0.0.2 -u -b 25M -l 1400 -t 30

@@ -25,11 +25,35 @@ class SimpleMonitor13(app_manager.RyuApp):
         self.ENABLE_AI_PREDICT_LOG = True 
         self.STATUS_INTERVAL = 1.0
         
-        # [CẤU HÌNH NGƯỠNG]
-        self.MIN_PPS_THRESHOLD = 150        
-        self.VOLUMETRIC_THRESHOLD = 4000    
-        self.AI_CONFIDENCE_THRESHOLD = 0.75 
-        self.PRED_LOCK_SECONDS = 3          
+        # ==========================================
+        # [CẤU HÌNH NGƯỠNG ĐỊNH LƯỢNG - TUNING AREA]
+        # ==========================================
+        
+        # 1. Ngưỡng cơ bản
+        self.MIN_PPS_THRESHOLD = 150         # Dưới mức này là nhiễu, bỏ qua
+        self.VOLUMETRIC_THRESHOLD = 4000     # Trên mức này là Flood, chặn cứng
+        
+        # 2. Ngưỡng AI
+        self.AI_CONFIDENCE_THRESHOLD = 0.75  # Ngưỡng chặn của AI
+        self.AI_HIGH_CONFIDENCE = 0.99       # Ngưỡng AI chắc chắn tuyệt đối (để hiện lý do High PPS)
+        self.AI_WARNING_THRESHOLD = 0.5      # Ngưỡng cảnh báo
+        
+        # 3. Whitelist (Bảo vệ Video 4K/File)
+        self.WHITELIST_PKT_SIZE = 1000       # Gói tin > 1000 Bytes -> Luôn cho qua
+        
+        # 4. Blacklist Logic (Luật chặn cứng dựa trên hành vi)
+        # Rule 2b: UDP Small Flood
+        self.UDP_FLOOD_PPS = 1000            # Tốc độ tối thiểu để xét
+        self.UDP_FLOOD_SIZE = 100            # Kích thước tối đa để xét (nhỏ hơn mức này là dính)
+        
+        # Rule 2c: TCP SYN Flood
+        self.SYN_FLOOD_PPS = 300             # SYN Flood thường cần ít PPS hơn UDP để gây hại
+        self.SYN_FLOOD_SIZE = 120            # Gói SYN thường rất nhỏ
+        
+        # 5. Timer
+        self.PRED_LOCK_SECONDS = 3           # Thời gian giữ hiển thị trên CLI
+        
+        # ==========================================
         
         self.firewall_enabled = True 
         
@@ -382,7 +406,7 @@ class SimpleMonitor13(app_manager.RyuApp):
                 f.write(",".join(map(str, row)) + "\n")
         except: pass
 
-    # [FIX] Đã thêm try-except để chống crash
+    # [CRITICAL FIX] Thêm try-except trong vòng lặp để tránh crash hệ thống
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
     def _flow_stats_reply_handler(self, ev):
         body = ev.msg.body
@@ -391,7 +415,7 @@ class SimpleMonitor13(app_manager.RyuApp):
         current_time = time.time()
 
         for stat in body:
-            try:
+            try: # [FIX] Bảo vệ vòng lặp
                 if stat.priority == 0: continue
                 ip_proto = stat.match.get('ip_proto', 0)
                 
@@ -406,12 +430,9 @@ class SimpleMonitor13(app_manager.RyuApp):
                     src_key = stat.match.get('ipv4_src', '0.0.0.0')
                     dst_key = 'BLOCK'
                     
-                    # Update flow_history cho blocked flow để tính BPS/PPS nếu cần (optional)
-                    # Quan trọng: Active Flow Stats cho Dashboard
                     packet_count = stat.packet_count
                     byte_count = stat.byte_count
                     
-                    # Tính rate (đơn giản)
                     flow_key = (dpid, src_key, dst_key, ip_proto, stat.priority)
                     mbps_current = 0
                     if flow_key in self.flow_history:
@@ -459,14 +480,13 @@ class SimpleMonitor13(app_manager.RyuApp):
 
                 traffic_type = 'Benign'
                 
-                # Bỏ qua ICMP control messages (không phải Echo Request)
+                # Bỏ qua ICMP control messages
                 icmp_type_stat = stat.match.get('icmpv4_type')
                 if ip_proto == 1 and icmp_type_stat == 0:
                     self.active_flow_stats[flow_key] = {'rate': mbps_current, 'type': 'Benign', 'ts': current_time}
                     continue
 
                 if 'ipv4_src' not in stat.match: 
-                    # Vẫn update stats để vẽ biểu đồ dù không có IP src (l2 flows)
                     self.active_flow_stats[flow_key] = {'rate': mbps_current, 'type': 'Benign', 'ts': current_time}
                     continue
                     
@@ -495,9 +515,8 @@ class SimpleMonitor13(app_manager.RyuApp):
                     reason = f"Safe (Conf: {ai_conf_score:.2f})"
                     display_priority = 1
                     
-                    # [WHITELIST] BẢO VỆ SERVER (Port 80/443/8080)
+                    # [WHITELIST] Server Protection
                     tp_src = stat.match.get('tcp_src') or stat.match.get('udp_src') or 0
-                    
                     if tp_src in [80, 443, 8080]:
                         final_action = "ALLOW"
                         reason = f"Server Response (Port {tp_src})"
@@ -511,41 +530,40 @@ class SimpleMonitor13(app_manager.RyuApp):
                         display_priority = 3
                     
                     # Rule 2: Whitelist Video/File
-                    elif avg_pkt_size > 1000:
+                    elif avg_pkt_size > self.WHITELIST_PKT_SIZE:
                         final_action = "ALLOW"
                         reason = f"Whitelist: Large Pkt ({int(avg_pkt_size)}B)"
                         display_priority = 2
                         traffic_type = 'Benign'
 
                     # Rule 2b: Chặn UDP giả dạng
-                    elif ip_proto == 17 and pps_rate > 1000 and avg_pkt_size < 100:
+                    elif ip_proto == 17 and pps_rate > self.UDP_FLOOD_PPS and avg_pkt_size < self.UDP_FLOOD_SIZE:
                         final_action = "BLOCK"
                         reason = f"Small UDP Flood ({int(avg_pkt_size)}B)"
                         display_priority = 3
 
                     # Rule 2c: Chặn TCP SYN Flood
-                    elif ip_proto == 6 and pps_rate > 300 and avg_pkt_size < 120:
+                    elif ip_proto == 6 and pps_rate > self.SYN_FLOOD_PPS and avg_pkt_size < self.SYN_FLOOD_SIZE:
                         final_action = "BLOCK"
                         reason = f"TCP SYN Flood Detect ({int(avg_pkt_size)}B)"
                         display_priority = 3
 
-                    # [UPDATED] Rule 3: AI Chặn (Hiển thị lý do tùy chỉnh)
+                    # [UPDATED] Rule 3: AI Chặn (Reason chỉnh sửa & Sử dụng biến ngưỡng)
                     elif ai_verdict == "AI_ATTACK":
                         final_action = "BLOCK"
-                        # Chỉ hiện lý do này nếu Conf > 0.7 và PPS cao
-                        if ai_conf_score > 0.7 and pps_rate > 1000:
+                        if ai_conf_score > self.AI_HIGH_CONFIDENCE: # > 0.99
                              reason = f"AI Detect + High PPS (Conf: {ai_conf_score:.2f})"
                         else:
                              reason = f"AI Detected (Conf: {ai_conf_score:.2f})"
                         display_priority = 3
 
                     # Rule 4: Warning
-                    elif ai_conf_score > 0.5:
+                    elif ai_conf_score > self.AI_WARNING_THRESHOLD:
                         final_action = "WARNING"
                         reason = f"Suspicious (Conf: {ai_conf_score:.2f})"
                         display_priority = 2
 
-                    # BƯỚC 3: THỰC THI (Hỗ trợ Passive Mode)
+                    # BƯỚC 3: THỰC THI
                     if final_action == "BLOCK":
                         if self.firewall_enabled:
                             traffic_type = 'Blocked'
@@ -583,8 +601,6 @@ class SimpleMonitor13(app_manager.RyuApp):
                 self.active_flow_stats[flow_key] = {'rate': mbps_current, 'type': traffic_type, 'ts': current_time}
             
             except Exception as e:
-                # [FIX] Log lỗi nhưng không crash hệ thống
-                # print(f"Error processing flow: {e}") 
                 continue
         
         self.switch_stats[dpid] = local_summary
@@ -642,12 +658,10 @@ class SimpleMonitor13(app_manager.RyuApp):
         if ip_src in self.blocked_ips:
             if current_time < self.blocked_ips[ip_src]['unlock_time']: return 
         
-        # [FIX GHOST TRAFFIC] Xóa ngay lập tức mọi dấu vết của IP này trong bộ nhớ đệm
-        # Xóa history (để reset bộ đếm PPS)
+        # [FIX GHOST TRAFFIC] Xóa ngay lập tức mọi dữ liệu cũ
         keys_to_remove = [k for k in self.flow_history if k[1] == ip_src]
         for k in keys_to_remove: del self.flow_history[k]
         
-        # [MỚI] Xóa active stats (để reset biểu đồ Dashboard ngay lập tức)
         keys_to_remove_active = [k for k in self.active_flow_stats if k[1] == ip_src]
         for k in keys_to_remove_active: del self.active_flow_stats[k]
 

@@ -7,3 +7,8 @@ Chèn Công thức: Viết rõ công thức tính Standard Scaler, công thức 
 Tận dụng Hình ảnh: Bạn đã có rất nhiều ảnh đẹp (Dashboard đỏ, Dashboard xanh, Terminal log, Cấu trúc thư mục). Hãy chèn rải rác để minh họa cho từng tiểu mục.
 
 Phần Tài liệu tham khảo: Nhớ trích dẫn nguồn dataset CIC-DDoS2019 và các thư viện Ryu/Streamlit.
+
+
+Trên biểu đồ giám sát, vùng màu đỏ thể hiện Lưu lượng Ingress (lưu lượng đi vào) đã được hệ thống nhận diện và áp dụng quy tắc DROP tại Switch biên. Mặc dù chỉ số này cao (thể hiện cường độ tấn công lớn), nhưng thực tế lưu lượng này đã bị triệt tiêu ngay tại tầng Data Plane và không đi vào mạng nội bộ (Egress = 0). Điều này được kiểm chứng thông qua việc bắt gói tin tại máy nạn nhân (Victim), cho thấy không có gói tin tấn công nào lọt qua.
+
+
