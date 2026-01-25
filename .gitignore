@@ -1,0 +1,6 @@
+# Windows system files
+Desktop.ini
+**/Desktop.ini
+
+# Optional: common Windows thumbnail cache
+Thumbs.db
