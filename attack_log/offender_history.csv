@@ -1,4 +1,0 @@
-Attacker_IP,Total_Blocks,Attack_Methods,Last_Seen
-10.0.0.1,1,UDP,13:34:34
-10.0.0.3,3,ICMP,13:38:28
-10.0.0.6,2,TCP,14:36:21

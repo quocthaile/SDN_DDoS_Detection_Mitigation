@@ -30,7 +30,7 @@ pip install seaborn streamlit plotly watchdog
 
 # Thư viện lấy thông số hệ thống, server
 pip install psutil flask flask-cors webob routes oslo.config msgpack netaddr "dnspython<2.0.0"
-
+pip install streamlit-autorefresh
 
 
 # ================================ Plot dashboard ===================================

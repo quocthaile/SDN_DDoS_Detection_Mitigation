@@ -4,12 +4,23 @@ import psutil
 import time
 import os
 import altair as alt
+import html
 from datetime import datetime
 import warnings
 
 # --- TẮT CẢNH BÁO ---
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
+
+# Import auto-refresh (install: pip install streamlit-autorefresh)
+try:
+    from streamlit_autorefresh import st_autorefresh
+    HAS_AUTOREFRESH = True
+except ImportError:
+    HAS_AUTOREFRESH = False
+
+# Check if st.fragment is available (Streamlit >= 1.33)
+HAS_FRAGMENT = hasattr(st, 'fragment')
 
 st.set_page_config(
     page_title="SDN AI-Guard Dashboard",
@@ -25,12 +36,83 @@ PROJECT_ROOT = os.path.dirname(BASE_DIR) if os.path.exists(os.path.join(os.path.
 ATTACK_LOG_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'attack_logs.csv')
 HISTORY_LOG_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'offender_history.csv')
 MANUAL_BLOCK_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'manual_blocks.txt')
+MANUAL_UNBLOCK_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'manual_unblocks.txt')
+CURRENT_BLOCKS_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'current_blocks.csv')
 DDOS_DATASET_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'ddos_captured_dataset.csv')
 TRAFFIC_MONITOR_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'traffic_monitor.csv')
 AI_PREDICT_LOG_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'ai_predict.csv')
 FIREWALL_STATUS_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'firewall_status.txt')
 
-st.markdown("""<style>.stApp { background-color: #0E1117; color: #FAFAFA; } .metric-card { background-color: #262730; padding: 10px; border-radius: 5px; } .stButton>button { width: 100%; border-radius: 5px; }</style>""", unsafe_allow_html=True)
+st.markdown(
+        """
+<style>
+    .stApp { background-color: #0E1117; color: #FAFAFA; }
+    .stButton>button { width: 100%; border-radius: 6px; }
+
+    /* Top status bar (matches screenshot style) */
+    .status-row {
+        background: radial-gradient(1200px 400px at 20% -50%, rgba(56,189,248,0.08), rgba(0,0,0,0)),
+                    linear-gradient(180deg, rgba(15,23,42,0.72), rgba(2,6,23,0.72));
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 16px;
+        padding: 18px 18px;
+    }
+    .status-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        align-items: start;
+    }
+    .status-item {
+        padding: 4px 6px;
+    }
+    .status-title {
+        font-size: 13px;
+        color: rgba(250,250,250,0.70);
+        letter-spacing: 0.2px;
+        margin-bottom: 10px;
+    }
+    .status-value {
+        font-size: 40px;
+        font-weight: 750;
+        line-height: 1.1;
+        margin: 0 0 12px 0;
+        color: rgba(250,250,250,0.98);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .status-pill {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        font-size: 12px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.14);
+        color: rgba(250,250,250,0.90);
+        background: rgba(255,255,255,0.06);
+    }
+    .pill-critical { background: rgba(239, 68, 68, 0.18); border-color: rgba(239, 68, 68, 0.35); }
+    .pill-warning  { background: rgba(245, 158, 11, 0.18); border-color: rgba(245, 158, 11, 0.35); }
+    .pill-ok       { background: rgba(16, 185, 129, 0.16); border-color: rgba(16, 185, 129, 0.35); }
+    .pill-off      { background: rgba(148, 163, 184, 0.14); border-color: rgba(148, 163, 184, 0.30); }
+
+    /* Chart section container */
+    .chart-title {
+        font-size: 16px;
+        font-weight: 650;
+        margin: 0 0 6px 0;
+    }
+    .chart-subtitle {
+        font-size: 12px;
+        color: rgba(250,250,250,0.65);
+        margin: 0 0 10px 0;
+    }
+</style>
+""",
+        unsafe_allow_html=True,
+)
 
 if 'traffic_history' not in st.session_state: st.session_state.traffic_history = pd.DataFrame(columns=['Time', 'Speed_MBps', 'Type'])
 if 'last_time' not in st.session_state: st.session_state.last_time = time.time()
@@ -48,6 +130,19 @@ def save_manual_block(ip):
         with open(MANUAL_BLOCK_FILE, "a") as f: f.write(f"{ip}\n"); f.flush()
         return True
     except Exception as e: st.error(f"Lỗi: {e}"); return False
+
+def save_manual_unblock(ip):
+    try:
+        with open(MANUAL_UNBLOCK_FILE, "a") as f: f.write(f"{ip}\n"); f.flush()
+        return True
+    except Exception as e: st.error(f"Lỗi: {e}"); return False
+
+def load_current_blocks():
+    if not os.path.exists(CURRENT_BLOCKS_FILE): return pd.DataFrame()
+    try:
+        if os.path.getsize(CURRENT_BLOCKS_FILE) == 0: return pd.DataFrame()
+        return pd.read_csv(CURRENT_BLOCKS_FILE, on_bad_lines='skip', engine='python')
+    except: return pd.DataFrame()
 
 def clear_all_logs():
     try:
@@ -85,6 +180,36 @@ def format_speed(mbps):
     else:
         return f"{mbps:.2f} Mbps"
 
+
+def status_row(cards):
+    items_html = ""
+    for c in cards:
+        title = html.escape(str(c.get('title', '')))
+        value = html.escape(str(c.get('value', '')))
+        pill_text = c.get('pill_text')
+        pill_variant = c.get('pill_variant', 'ok')
+        if pill_text:
+            pill_text = html.escape(str(pill_text))
+            pill = f"<span class='status-pill pill-{pill_variant}'>↑ {pill_text}</span>"
+        else:
+            pill = ""
+
+        items_html += (
+            "<div class='status-item'>"
+            f"<div class='status-title'>{title}</div>"
+            f"<div class='status-value'>{value}</div>"
+            f"{pill}"
+            "</div>"
+        )
+
+    return f"""
+<div class='status-row'>
+  <div class='status-grid'>
+    {items_html}
+  </div>
+</div>
+"""
+
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ Control Panel")
@@ -115,10 +240,56 @@ with st.sidebar:
     st.divider()
     if st.button("🗑️ Clear All Logs & History"):
         if clear_all_logs(): st.success("System Cleaned!"); time.sleep(1); st.rerun()
-    st.caption("✅ System Active | Refresh: 1s")
+    st.caption("System Active | Refresh: 3s")
 
 # --- MAIN PAGE ---
 st.title("SDN AI-Guard Monitoring Center")
+
+# --- SYSTEM HEALTH SECTION (moved to top) ---
+st.subheader("💻 System Health")
+
+# Get system metrics
+cpu_percent = psutil.cpu_percent(interval=0.1)
+memory = psutil.virtual_memory()
+ram_percent = memory.percent
+ram_used = memory.used / (1024**3)  # GB
+ram_total = memory.total / (1024**3)  # GB
+
+# Display in columns
+h1, h2, h3, h4 = st.columns(4)
+
+with h1:
+    # CPU Usage with color indicator
+    if cpu_percent >= 80:
+        st.metric("🔴 CPU Usage", f"{cpu_percent:.1f}%", delta="High", delta_color="inverse")
+    elif cpu_percent >= 50:
+        st.metric("🟡 CPU Usage", f"{cpu_percent:.1f}%", delta="Medium", delta_color="off")
+    else:
+        st.metric("🟢 CPU Usage", f"{cpu_percent:.1f}%", delta="Normal")
+
+with h2:
+    # RAM Usage with color indicator
+    if ram_percent >= 80:
+        st.metric("🔴 RAM Usage", f"{ram_percent:.1f}%", delta="High", delta_color="inverse")
+    elif ram_percent >= 50:
+        st.metric("🟡 RAM Usage", f"{ram_percent:.1f}%", delta="Medium", delta_color="off")
+    else:
+        st.metric("🟢 RAM Usage", f"{ram_percent:.1f}%", delta="Normal")
+
+with h3:
+    st.metric("📊 RAM Used", f"{ram_used:.2f} GB", delta=f"of {ram_total:.1f} GB")
+
+with h4:
+    # Network connections count
+    try:
+        net_connections = len(psutil.net_connections(kind='inet'))
+        st.metric("🌐 Net Connections", net_connections)
+    except:
+        st.metric("🌐 Net Connections", "N/A")
+
+st.divider()
+
+# --- SYSTEM STATUS ---
 df_attacks = load_data(ATTACK_LOG_FILE)
 df_history = load_data(HISTORY_LOG_FILE)
 system_state = "SAFE"
@@ -152,70 +323,112 @@ if not df_traffic.empty:
     curr_allowed_attack = df_traffic.iloc[-1]['Allowed_Attack_MBps']
     curr_benign = df_traffic.iloc[-1]['Benign_MBps']
 
-# [DYNAMIC METRICS]
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    if not new_fw_state: st.metric("System Status", "DISABLED", delta="Off", delta_color="off")
-    elif system_state == "CRITICAL": st.metric("System Status", "UNDER ATTACK", delta="- CRITICAL", delta_color="inverse")
-    elif system_state == "WARNING": st.metric("System Status", "SUSPICIOUS", delta="! WARNING", delta_color="off")
-    else: st.metric("System Status", "SECURE", delta="Active")
-with c2: 
-    if curr_allowed_attack > 0:
-        st.metric("Allowed Attack", format_speed(curr_allowed_attack), delta="Risk!", delta_color="inverse")
-    else:
-        st.metric("Malicious IPs", df_attacks['ip_src'].nunique() if not df_attacks.empty else 0)
-        
-with c3: st.metric("Blocked Traffic", format_speed(curr_blocked), delta="Stopped", delta_color="normal")
-with c4: st.metric("Benign Traffic", format_speed(curr_benign), delta="Clean")
+# --- SYSTEM STATUS BAR (LIKE SCREENSHOT) ---
+if not new_fw_state:
+    status_text = "DISABLED"
+    status_pill = "Off"
+    status_variant = "off"
+elif system_state == "CRITICAL":
+    status_text = "UNDER ATTACK"
+    status_pill = "CRITICAL"
+    status_variant = "critical"
+elif system_state == "WARNING":
+    status_text = "SUSPICIOUS"
+    status_pill = "WARNING"
+    status_variant = "warning"
+else:
+    status_text = "SECURE"
+    status_pill = "Active"
+    status_variant = "ok"
 
-# --- CHART (DYNAMIC SCALING & FIXED WIDTH) ---
+malicious_ips = df_attacks['ip_src'].nunique() if not df_attacks.empty and 'ip_src' in df_attacks.columns else 0
+
+cards = [
+    {"title": "System Status", "value": status_text, "pill_text": status_pill, "pill_variant": status_variant},
+    {"title": "Malicious IPs", "value": str(malicious_ips), "pill_text": None, "pill_variant": "ok"},
+    {"title": "Blocked Traffic", "value": format_speed(float(curr_blocked)), "pill_text": "Stopped", "pill_variant": "ok"},
+    {"title": "Benign Traffic", "value": format_speed(float(curr_benign)), "pill_text": "Clean", "pill_variant": "ok"},
+]
+
+st.markdown(status_row(cards), unsafe_allow_html=True)
+
+
+# --- TRAFFIC CHART (AREA + LINES LIKE SCREENSHOT) ---
 st.divider()
+st.markdown("<div class='chart-title'>Traffic Status</div>", unsafe_allow_html=True)
+
 if not df_traffic.empty:
-    # Tính toán đơn vị phù hợp
-    max_val = df_traffic[['Blocked_MBps', 'Allowed_Attack_MBps', 'Benign_MBps']].max().max()
-    scale_factor = 1.0
-    unit_label = "Mbps"
-    if max_val >= 1024:
-        scale_factor = 1024.0
-        unit_label = "Gbps"
-    elif max_val < 1: 
-        scale_factor = 1/1024.0
-        unit_label = "Kbps"
-    
-    df_melt = df_traffic.melt('Sequence', value_vars=['Blocked_MBps', 'Allowed_Attack_MBps', 'Benign_MBps'], var_name='Type', value_name='Original_MBps')
-    df_melt['Value'] = df_melt['Original_MBps'] / scale_factor
-    df_melt['Type'] = df_melt['Type'].replace({
+    # Use Mbps like the screenshot
+    df_plot = df_traffic[['Sequence', 'Blocked_MBps', 'Allowed_Attack_MBps', 'Benign_MBps']].copy()
+    df_plot['Blocked_MBps'] = pd.to_numeric(df_plot['Blocked_MBps'], errors='coerce').fillna(0.0)
+    df_plot['Allowed_Attack_MBps'] = pd.to_numeric(df_plot['Allowed_Attack_MBps'], errors='coerce').fillna(0.0)
+    df_plot['Benign_MBps'] = pd.to_numeric(df_plot['Benign_MBps'], errors='coerce').fillna(0.0)
+
+    max_val = float(df_plot[['Blocked_MBps', 'Allowed_Attack_MBps', 'Benign_MBps']].max().max())
+    y_max = max(5.0, max_val * 1.2)
+
+    df_long = df_plot.melt(
+        id_vars=['Sequence'],
+        value_vars=['Blocked_MBps', 'Allowed_Attack_MBps', 'Benign_MBps'],
+        var_name='Type',
+        value_name='Value'
+    )
+    df_long['Type'] = df_long['Type'].replace({
         'Blocked_MBps': 'Blocked Attack (Red)',
-        'Allowed_Attack_MBps': 'Allowed Attack (Orange)',
+        'Allowed_Attack_MBps': 'Detected Unblocked (Orange)',
         'Benign_MBps': 'Benign Traffic (Green)'
     })
-    
-    base = alt.Chart(df_melt).encode(
-        x=alt.X('Sequence', axis=alt.Axis(title='60 Seconds Window', labels=False, grid=True, tickCount=10), scale=alt.Scale(domain=[0, 60])),
-        y=alt.Y('Value', title=f'Throughput ({unit_label})', stack=None, axis=alt.Axis(grid=True)),
-        color=alt.Color('Type', 
-            scale=alt.Scale(
-                domain=['Blocked Attack (Red)', 'Allowed Attack (Orange)', 'Benign Traffic (Green)'], 
-                range=['#d62728', '#ff7f0e', '#2ca02c']
-            ), 
-            legend=alt.Legend(title="Traffic Status", orient="top-left")
+
+    domain = ['Blocked Attack (Red)', 'Detected Unblocked (Orange)', 'Benign Traffic (Green)']
+    colors = ['#EF4444', '#F59E0B', '#22C55E']
+
+    base = alt.Chart(df_long).encode(
+        x=alt.X(
+            'Sequence:Q',
+            axis=alt.Axis(title=None, labels=False, ticks=False, grid=False),
+        ),
+        y=alt.Y(
+            'Value:Q',
+            axis=alt.Axis(title='Throughput (Mbps)', grid=True),
+            scale=alt.Scale(domain=[0, y_max]),
+        ),
+        color=alt.Color(
+            'Type:N',
+            scale=alt.Scale(domain=domain, range=colors),
+            legend=alt.Legend(title='Traffic Status', orient='top-left'),
         ),
         tooltip=[
-            alt.Tooltip('Type', title='Type'),
-            alt.Tooltip('Value', title=f'Speed ({unit_label})', format='.2f')
-        ]
+            alt.Tooltip('Type:N', title='Type'),
+            alt.Tooltip('Value:Q', title='Mbps', format='.2f'),
+        ],
     )
-    
-    area = base.mark_area(opacity=0.3, interpolate='monotone')
-    line = base.mark_line(opacity=1.0, strokeWidth=2, interpolate='monotone')
-    chart = (area + line).properties(height=350)
 
-    # [FIX] Sử dụng width="stretch" để sửa lỗi
-    try: 
-        st.altair_chart(chart, width="stretch")
-    except: 
-        st.altair_chart(chart, use_container_width=True)
-else: st.info("Waiting for traffic data stream...")
+    blocked_area = (
+        base.transform_filter(alt.datum.Type == 'Blocked Attack (Red)')
+        .mark_area(opacity=0.25)
+    )
+    lines = base.mark_line(strokeWidth=2)
+
+    chart = (
+        (blocked_area + lines)
+        .properties(height=300)
+        .configure_view(stroke=None, fill='#0E1117')
+        .configure_axis(
+            labelColor='rgba(250,250,250,0.70)',
+            titleColor='rgba(250,250,250,0.85)',
+            gridColor='rgba(148,163,184,0.18)',
+            tickColor='rgba(148,163,184,0.20)',
+        )
+        .configure_legend(
+            labelColor='rgba(250,250,250,0.80)',
+            titleColor='rgba(250,250,250,0.85)',
+        )
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+    st.caption("60 Seconds Window")
+else:
+    st.info("Waiting for traffic data stream...")
 
 st.divider()
 c1, c2 = st.columns([3, 1])
@@ -236,13 +449,109 @@ if not df_attacks.empty:
         if 'timestamp' in df_display.columns:
             df_display['timestamp'] = df_display['timestamp'].apply(lambda x: datetime.fromtimestamp(float(x)).strftime('%H:%M:%S') if pd.notnull(x) else x)
         
-        # [FIX] Sử dụng width="stretch" cho dataframe
-        try: 
-            st.dataframe(df_display[valid_cols].head(8), width="stretch", hide_index=True)
-        except: 
-            st.dataframe(df_display[valid_cols].head(8), use_container_width=True, hide_index=True)
-    except: st.dataframe(df_attacks.tail(8))
+        # Hiển thị từng dòng log với nút Block cho Warning/Attack
+        df_top = df_display[valid_cols].head(8)
+        
+        # Header row
+        hcol1, hcol2, hcol3, hcol4, hcol5, hcol6, hcol7, hcol8 = st.columns([1.2, 1.5, 1.5, 0.8, 1, 1, 2, 1])
+        with hcol1: st.markdown("**Time**")
+        with hcol2: st.markdown("**Source IP**")
+        with hcol3: st.markdown("**Dest IP**")
+        with hcol4: st.markdown("**Proto**")
+        with hcol5: st.markdown("**Packets**")
+        with hcol6: st.markdown("**Label**")
+        with hcol7: st.markdown("**Reason**")
+        with hcol8: st.markdown("**Action**")
+        
+        st.markdown("---")
+        
+        # Data rows với nút Block
+        for row_idx, row in df_top.iterrows():
+            col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([1.2, 1.5, 1.5, 0.8, 1, 1, 2, 1])
+            
+            with col1: st.text(str(row.get('timestamp', '-')))
+            with col2: st.text(str(row.get('ip_src', '-')))
+            with col3: st.text(str(row.get('ip_dst', '-')))
+            with col4: 
+                proto_val = row.get('ip_proto', '-')
+                proto_map = {1: 'ICMP', 6: 'TCP', 17: 'UDP'}
+                st.text(proto_map.get(int(proto_val), str(proto_val)) if str(proto_val).isdigit() else str(proto_val))
+            with col5: st.text(str(row.get('packet_count', '-')))
+            with col6:
+                label = str(row.get('label', '-'))
+                if label == 'Attack':
+                    st.markdown(f"🔴 **{label}**")
+                elif label == 'Warning':
+                    st.markdown(f"🟠 **{label}**")
+                else:
+                    st.text(label)
+            with col7: st.text(str(row.get('reason', '-'))[:25])
+            with col8:
+                src_ip = str(row.get('ip_src', ''))
+                label = str(row.get('label', ''))
+                # Hiển thị nút Block cho Warning và Attack (nếu firewall ON)
+                if label in ['Warning', 'Attack'] and new_fw_state and src_ip:
+                    if st.button("🚫", key=f"log_block_{src_ip}_{row_idx}", help=f"Block {src_ip}"):
+                        if save_manual_block(src_ip):
+                            st.toast(f"✅ Blocked {src_ip}")
+                            time.sleep(0.3)
+                            st.rerun()
+                else:
+                    st.text("-")
+                    
+    except Exception as e: 
+        st.dataframe(df_attacks.tail(8), width="stretch")
 else: st.info("System is clean.")
+
+st.divider()
+
+# --- CURRENT BLOCKED IPs SECTION ---
+st.subheader("🔒 Currently Blocked IPs")
+df_current_blocks = load_current_blocks()
+
+if not df_current_blocks.empty and 'IP' in df_current_blocks.columns:
+    # Header row
+    hcol1, hcol2, hcol3, hcol4, hcol5 = st.columns([2, 1.5, 1.5, 2.5, 1])
+    with hcol1: st.markdown("**IP Address**")
+    with hcol2: st.markdown("**Time Left**")
+    with hcol3: st.markdown("**Protocol**")
+    with hcol4: st.markdown("**Reason**")
+    with hcol5: st.markdown("**Action**")
+    
+    st.markdown("---")
+    
+    # Data rows với nút Unblock
+    for idx, row in df_current_blocks.iterrows():
+        col1, col2, col3, col4, col5 = st.columns([2, 1.5, 1.5, 2.5, 1])
+        
+        ip_addr = str(row.get('IP', '-'))
+        time_left = int(row.get('Time_Left', 0))
+        duration = int(row.get('Duration', 60))
+        proto = str(row.get('Protocol', '-'))
+        reason = str(row.get('Reason', '-'))
+        
+        with col1: 
+            st.markdown(f"🚫 **{ip_addr}**")
+        with col2: 
+            if time_left > 0:
+                st.text(f"{time_left}s / {duration}s")
+            else:
+                st.text("Expiring...")
+        with col3:
+            st.text(proto)
+        with col4:
+            st.text(reason[:30] if len(reason) > 30 else reason)
+        with col5:
+            if new_fw_state:
+                if st.button("🔓", key=f"unblock_{ip_addr}_{idx}", help=f"Unblock {ip_addr}"):
+                    if save_manual_unblock(ip_addr):
+                        st.toast(f"✅ Unblocked {ip_addr}")
+                        time.sleep(0.3)
+                        st.rerun()
+            else:
+                st.text("-")
+else:
+    st.info("No IPs currently blocked.")
 
 st.divider()
 st.subheader("🚫 Blocked IP History")
@@ -251,7 +560,8 @@ if not df_history.empty:
     try: 
         st.dataframe(df_history.sort_values(by='Total_Blocks', ascending=False), width="stretch", hide_index=True)
     except: 
-        st.dataframe(df_history.sort_values(by='Total_Blocks', ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(df_history.sort_values(by='Total_Blocks', ascending=False), width="stretch", hide_index=True)
 
-time.sleep(1)
-st.rerun()
+# Auto-refresh every 3 seconds (3000ms) để tránh chớp tắt
+if HAS_AUTOREFRESH:
+    st_autorefresh(interval=3000, limit=None, key="dashboard_refresh")
