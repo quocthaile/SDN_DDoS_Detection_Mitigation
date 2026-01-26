@@ -240,7 +240,7 @@ with st.sidebar:
     st.divider()
     if st.button("🗑️ Clear All Logs & History"):
         if clear_all_logs(): st.success("System Cleaned!"); time.sleep(1); st.rerun()
-    st.caption("System Active | Refresh: 3s")
+    st.caption("System Active | Refresh: 1s")
 
 # --- MAIN PAGE ---
 st.title("SDN AI-Guard Monitoring Center")
@@ -306,7 +306,7 @@ def load_traffic_monitor():
     if not os.path.exists(TRAFFIC_MONITOR_FILE): return pd.DataFrame()
     try:
         df = pd.read_csv(TRAFFIC_MONITOR_FILE, on_bad_lines='skip')
-        required_cols = ['Blocked_MBps', 'Allowed_Attack_MBps', 'Benign_MBps']
+        required_cols = ['Blocked_MBps', 'Suspicious_MBps', 'Benign_MBps']
         if not all(col in df.columns for col in required_cols): return pd.DataFrame()
         df = df.tail(60).reset_index(drop=True)
         df['Sequence'] = df.index 
@@ -315,12 +315,12 @@ def load_traffic_monitor():
 
 df_traffic = load_traffic_monitor()
 curr_blocked = 0.0
-curr_allowed_attack = 0.0
+curr_suspicious = 0.0
 curr_benign = 0.0
 
 if not df_traffic.empty:
     curr_blocked = df_traffic.iloc[-1]['Blocked_MBps']
-    curr_allowed_attack = df_traffic.iloc[-1]['Allowed_Attack_MBps']
+    curr_suspicious = df_traffic.iloc[-1]['Suspicious_MBps']
     curr_benign = df_traffic.iloc[-1]['Benign_MBps']
 
 # --- SYSTEM STATUS BAR (LIKE SCREENSHOT) ---
@@ -359,23 +359,23 @@ st.markdown("<div class='chart-title'>Traffic Status</div>", unsafe_allow_html=T
 
 if not df_traffic.empty:
     # Use Mbps like the screenshot
-    df_plot = df_traffic[['Sequence', 'Blocked_MBps', 'Allowed_Attack_MBps', 'Benign_MBps']].copy()
+    df_plot = df_traffic[['Sequence', 'Blocked_MBps', 'Suspicious_MBps', 'Benign_MBps']].copy()
     df_plot['Blocked_MBps'] = pd.to_numeric(df_plot['Blocked_MBps'], errors='coerce').fillna(0.0)
-    df_plot['Allowed_Attack_MBps'] = pd.to_numeric(df_plot['Allowed_Attack_MBps'], errors='coerce').fillna(0.0)
+    df_plot['Suspicious_MBps'] = pd.to_numeric(df_plot['Suspicious_MBps'], errors='coerce').fillna(0.0)
     df_plot['Benign_MBps'] = pd.to_numeric(df_plot['Benign_MBps'], errors='coerce').fillna(0.0)
 
-    max_val = float(df_plot[['Blocked_MBps', 'Allowed_Attack_MBps', 'Benign_MBps']].max().max())
+    max_val = float(df_plot[['Blocked_MBps', 'Suspicious_MBps', 'Benign_MBps']].max().max())
     y_max = max(5.0, max_val * 1.2)
 
     df_long = df_plot.melt(
         id_vars=['Sequence'],
-        value_vars=['Blocked_MBps', 'Allowed_Attack_MBps', 'Benign_MBps'],
+        value_vars=['Blocked_MBps', 'Suspicious_MBps', 'Benign_MBps'],
         var_name='Type',
         value_name='Value'
     )
     df_long['Type'] = df_long['Type'].replace({
         'Blocked_MBps': 'Blocked Attack (Red)',
-        'Allowed_Attack_MBps': 'Detected Unblocked (Orange)',
+        'Suspicious_MBps': 'Detected Unblocked (Orange)',
         'Benign_MBps': 'Benign Traffic (Green)'
     })
 
@@ -407,11 +407,11 @@ if not df_traffic.empty:
         base.transform_filter(alt.datum.Type == 'Blocked Attack (Red)')
         .mark_area(opacity=0.25)
     )
-    lines = base.mark_line(strokeWidth=2)
+    lines = base.mark_line(strokeWidth=3)
 
     chart = (
         (blocked_area + lines)
-        .properties(height=300)
+        .properties(height=450)
         .configure_view(stroke=None, fill='#0E1117')
         .configure_axis(
             labelColor='rgba(250,250,250,0.70)',
@@ -562,6 +562,6 @@ if not df_history.empty:
     except: 
         st.dataframe(df_history.sort_values(by='Total_Blocks', ascending=False), width="stretch", hide_index=True)
 
-# Auto-refresh every 3 seconds (3000ms) để tránh chớp tắt
+# Auto-refresh every 1 second (1000ms) để tránh chớp tắt
 if HAS_AUTOREFRESH:
-    st_autorefresh(interval=3000, limit=None, key="dashboard_refresh")
+    st_autorefresh(interval=1000, limit=None, key="dashboard_refresh")

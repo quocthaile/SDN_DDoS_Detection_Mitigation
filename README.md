@@ -29,13 +29,13 @@ The training data is derived from the **CIC-DDoS2019** dataset, processed to mat
 
 The script `dataset/generate_dataset.py` processes raw PCAP/CSV files to extract 14 key features compatible with the Ryu Controller:
 
-| Feature Group | Features                                     | Description                                 |
-| :------------ | :------------------------------------------- | :------------------------------------------ |
-| **Protocol**  | `ip_proto`, `icmp_code`, `icmp_type`         | Identifies TCP, UDP, or ICMP traffic types. |
-| **Time**      | `duration_sec`, `duration_nsec`              | Duration of the flow.                       |
-| **Volume**    | `packet_count`, `byte_count`                 | Total traffic volume.                       |
-| **Rate**      | `pps_rate`, `bps_rate`                       | Calculated speed (packets/sec, bytes/sec).  |
-| **Flags**     | `total_fwd_packets`, `total_bwd_packets`     | Directional packet counts.                  |
+| Feature Group      | Features                                     | Description                                 |
+| :----------------- | :------------------------------------------- | :------------------------------------------ |
+| **Protocol** | `ip_proto`, `icmp_code`, `icmp_type`   | Identifies TCP, UDP, or ICMP traffic types. |
+| **Time**     | `duration_sec`, `duration_nsec`          | Duration of the flow.                       |
+| **Volume**   | `packet_count`, `byte_count`             | Total traffic volume.                       |
+| **Rate**     | `pps_rate`, `bps_rate`                   | Calculated speed (packets/sec, bytes/sec).  |
+| **Flags**    | `total_fwd_packets`, `total_bwd_packets` | Directional packet counts.                  |
 
 ### 2.2 Data Processing
 
@@ -155,7 +155,7 @@ mininet> h2 hping3 --udp -p 80 -i u10000 10.0.0.18
 **Goal:** Validate immediate mitigation for volumetric floods.
 
 ```bash
-mininet> h3 timeout 10s hping3 --flood --udp -p 80 10.0.0.18
+mininet> h3 hping3 --flood --udp -p 80 10.0.0.18
 ```
 
 **Expected result:** `BLOCKED` (hard volumetric rule, no AI needed).
@@ -185,7 +185,7 @@ mininet> h5 hping3 --udp -p 80 -i u1500 10.0.0.18
 **Goal:** Detect resource-exhaustion attempts against TCP services.
 
 ```bash
-mininet> h6 timeout 10s hping3 -S -p 80 --flood 10.0.0.18
+mininet> h6 hping3 -S -p 80 --flood 10.0.0.18
 ```
 
 **Expected result:** `BLOCKED` (TCP behavior: SYN-like tiny packets at high PPS).
@@ -205,7 +205,7 @@ mininet> h7 hping3 -S -p 80 -i u1000 10.0.0.18
 **Goal:** Validate mitigation for ICMP volumetric floods.
 
 ```bash
-mininet> h8 timeout 10s hping3 --icmp --flood 10.0.0.18
+mininet> h8 hping3 --icmp --flood 10.0.0.18
 ```
 
 **Expected result:** `BLOCKED` (volumetric threshold).
@@ -295,4 +295,3 @@ Proposed development directions:
 4. **Adaptive response:** automatically tune thresholds based on network load/time-of-day and observed user behavior.
 
 ---
-

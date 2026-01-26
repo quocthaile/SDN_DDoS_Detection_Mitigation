@@ -45,3 +45,9 @@ h2 iperf -s -u &
 
 #h1 truyền sang h2
 h1 iperf -c 10.0.0.2 -u -b 25M -l 1400 -t 30
+
+
+# xterm h2
+ ps aux | grep "mininet:h2"
+ sudo nsenter -t PID -n bash
+ tcpdump -n -i h2-eth0 icmp

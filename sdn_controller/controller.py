@@ -102,6 +102,10 @@ class SimpleMonitor13(app_manager.RyuApp):
         
         self.ENABLE_AI_PREDICT_LOG = True   # Enable/disable AI prediction logging to CSV
         self.STATUS_INTERVAL = 1.0          # Dashboard refresh interval in seconds (increased from 1.0)
+        self.DEBUG_LOGS = False             # Enable/disable DEBUG lines in CLI
+        self.DEBUG_BLOCKED_FLOW_LOGS = False  # Enable/disable [BLOCKED FLOW] logs
+        self.MANUAL_UNBLOCK_GRACE = 60      # Seconds to prevent re-block after manual unblock
+        self.ENABLE_WHITELIST_FILTER = False  # Enable/disable whitelist filter for large-packet flows
         
         # ============================================================
         # SECTION 3: DETECTION THRESHOLDS (TUNING AREA)
@@ -173,6 +177,9 @@ class SimpleMonitor13(app_manager.RyuApp):
         
         self.blocked_ips = {}                # Currently blocked IPs with metadata
                                              # {ip: {unlock_time, victim, proto, duration, reason}}
+
+        self.manual_allow = {}               # Manual unblocks with grace period
+                             # {ip: unlock_time}
         
         self.flow_history = {}               # Historical flow stats for rate calculation
                                              # {flow_key: (last_pkts, last_bytes, last_timestamp)}
@@ -316,7 +323,7 @@ class SimpleMonitor13(app_manager.RyuApp):
         Sets file permissions to 666 (read/write for all) for dashboard access.
         """
         with open(self.TRAFFIC_MONITOR_FILE, "w") as f:
-            f.write("Timestamp,Blocked_MBps,Allowed_Attack_MBps,Benign_MBps\n")
+            f.write("Timestamp,Blocked_MBps,Suspicious_MBps,Benign_MBps\n")
         try:
             os.chmod(self.TRAFFIC_MONITOR_FILE, 0o666)  # Make file accessible to dashboard
         except:
@@ -370,6 +377,13 @@ class SimpleMonitor13(app_manager.RyuApp):
                 os.chmod(self.FIREWALL_STATUS_FILE, 0o666)
             except:
                 pass
+
+    def _debug_print(self, message):
+        """
+        Print debug messages when DEBUG_LOGS is enabled.
+        """
+        if self.DEBUG_LOGS:
+            print(message)
 
     # ============================================================
     # SECTION 9: OPENFLOW EVENT HANDLERS
@@ -703,12 +717,30 @@ class SimpleMonitor13(app_manager.RyuApp):
             if not os.path.exists(self.HISTORY_FILE) and len(self.offender_history) > 0:
                 self.offender_history = {}
 
+            # Fix auto reblock---------------
+            current_time = time.time()
+            
+            # List copy to pass "dictionary changed size during iteration"
+            for ip in list(self.blocked_ips.keys()):
+                info = self.blocked_ips[ip]
+                # Nếu không phải chặn thủ công VÀ đã hết giờ
+                if info['reason'] != "Manual-Block" and current_time > info['unlock_time']:
+                    print(f"[TIMER] Time expired for {ip}. Unbanning...")
+                    self._unblock_ip(ip)
+            # Fix auto reblock-------------
+
             # CLEANUP EXPIRED BLOCKS
             current_ts = datetime.now().timestamp()
             expired_ips = [ip for ip, data in self.blocked_ips.items()
                           if current_ts > data['unlock_time']]
             for ip in expired_ips:
                 del self.blocked_ips[ip]
+
+            # CLEANUP EXPIRED MANUAL UNBLOCK GRACE
+            expired_allow = [ip for ip, ts in self.manual_allow.items()
+                             if current_ts > ts]
+            for ip in expired_allow:
+                del self.manual_allow[ip]
 
             # Reset prediction display lock if expired
             if time.time() >= self.pred_lock_until:
@@ -731,18 +763,18 @@ class SimpleMonitor13(app_manager.RyuApp):
             # AGGREGATE TRAFFIC DATA FOR DASHBOARD
             monitor_ts = time.time()
             total_blocked = 0.0
-            total_allowed_attack = 0.0
+            total_suspicious = 0.0
             total_benign = 0.0
             
             # Debug: count flows by type before aggregation
             blocked_count = sum(1 for k, v in self.active_flow_stats.items() if v.get('type') == 'Blocked')
             benign_count = sum(1 for k, v in self.active_flow_stats.items() if v.get('type') == 'Benign')
             if blocked_count > 0 or benign_count > 0:
-                print(f"[DEBUG AGGREGATE] Blocked: {blocked_count}, Benign: {benign_count} flows in active_flow_stats")
+                self._debug_print(f"[DEBUG AGGREGATE] Blocked: {blocked_count}, Benign: {benign_count} flows in active_flow_stats")
                 # Print top benign flows
                 for k, v in self.active_flow_stats.items():
                     if v.get('type') == 'Benign' and v.get('rate', 0) > 0.01:
-                        print(f"[DEBUG AGGREGATE] Benign flow: {k[1]} -> {k[2]} Rate: {v.get('rate', 0):.4f} Mbps")
+                        self._debug_print(f"[DEBUG AGGREGATE] Benign flow: {k[1]} -> {k[2]} Rate: {v.get('rate', 0):.4f} Mbps")
 
             # Sum up traffic rates from active flows
             stale_count = 0
@@ -754,7 +786,7 @@ class SimpleMonitor13(app_manager.RyuApp):
                 info = self.active_flow_stats[key]
                 
                 # Remove stale entries (older than 2 seconds for faster response)
-                if monitor_ts - info['ts'] > 2.0:
+                if monitor_ts - info['ts'] > 1.5:
                     stale_count += 1
                     del self.active_flow_stats[key]
                     continue
@@ -766,16 +798,16 @@ class SimpleMonitor13(app_manager.RyuApp):
                     # Always count blocked traffic, even if rate is low
                     if info['rate'] > 0:
                         total_blocked += info['rate']
-                elif info['type'] == 'Allowed_Attack':
+                elif info['type'] == 'Suspicious':
                     if info['rate'] > 0.001:
-                        total_allowed_attack += info['rate']
+                        total_suspicious += info['rate']
                 else:
                     # Skip benign flows with negligible rate
                     if info['rate'] <= 0.001:
                         low_rate_count += 1
                         # Debug: show first few low rate flows
                         if low_rate_count <= 5:
-                            print(f"[DEBUG LOW_RATE] key={key}, rate={info['rate']}, type={info['type']}")
+                            self._debug_print(f"[DEBUG LOW_RATE] key={key}, rate={info['rate']}, type={info['type']}")
                         continue
                         
                     # Only skip benign flows involving blocked IPs (prevents ghost traffic)
@@ -800,34 +832,45 @@ class SimpleMonitor13(app_manager.RyuApp):
                     total_benign += info['rate']
                     # Debug first 5 counted flows
                     if counted_benign <= 5:
-                        print(f"[DEBUG COUNTED] key={key} rate={info['rate']:.4f} type={info['type']}")
+                        self._debug_print(f"[DEBUG COUNTED] key={key} rate={info['rate']:.4f} type={info['type']}")
             
+            # Clear stale CLI prediction when no traffic is observed
+            if total_blocked == 0 and total_suspicious == 0 and total_benign == 0:
+                if time.time() >= self.pred_lock_until:
+                    self.latest_pred = {
+                        'src': '-', 'dst': '-', 'proto': '-',
+                        'rate': 0, 'result': 'IDLE', 'conf': '-', 'reason': '-',
+                        'priority': -1
+                    }
+                    self.pred_lock_priority = -1
+                    self.pred_lock_until = 0
+
             # Debug summary
-            print(f"[DEBUG SUMMARY] Stale: {stale_count}, LowRate: {low_rate_count}, BlockedIPSkip: {blocked_ip_skip_count}, Counted: {counted_benign}")
-            print(f"[DEBUG TOTALS] Blocked: {total_blocked:.4f} Mbps, Benign: {total_benign:.4f} Mbps, AllowedAttack: {total_allowed_attack:.4f} Mbps")
+            self._debug_print(f"[DEBUG SUMMARY] Stale: {stale_count}, LowRate: {low_rate_count}, BlockedIPSkip: {blocked_ip_skip_count}, Counted: {counted_benign}")
+            self._debug_print(f"[DEBUG TOTALS] Blocked: {total_blocked:.4f} Mbps, Benign: {total_benign:.4f} Mbps, Suspicious: {total_suspicious:.4f} Mbps")
             
             # Debug: show all flows with rate > 0.01
             high_rate_flows = [(k, v) for k, v in self.active_flow_stats.items() if v.get('rate', 0) > 0.01]
             if high_rate_flows:
-                print(f"[DEBUG HIGH_RATE] {len(high_rate_flows)} flows with rate > 0.01:")
+                self._debug_print(f"[DEBUG HIGH_RATE] {len(high_rate_flows)} flows with rate > 0.01:")
                 for k, v in high_rate_flows[:5]:
-                    print(f"    {k} -> rate={v['rate']:.4f}, type={v['type']}")
+                    self._debug_print(f"    {k} -> rate={v['rate']:.4f}, type={v['type']}")
 
             # WRITE TRAFFIC DATA TO FILE (for dashboard charts)
             try:
                 ts_str = datetime.now().strftime('%H:%M:%S')
                 if not os.path.exists(self.TRAFFIC_MONITOR_FILE):
                     with open(self.TRAFFIC_MONITOR_FILE, "w") as f:
-                        f.write("Timestamp,Blocked_MBps,Allowed_Attack_MBps,Benign_MBps\n")
+                        f.write("Timestamp,Blocked_MBps,Suspicious_MBps,Benign_MBps\n")
 
                 with open(self.TRAFFIC_MONITOR_FILE, "a") as f:
-                    f.write(f"{ts_str},{total_blocked:.4f},{total_allowed_attack:.4f},{total_benign:.4f}\n")
+                    f.write(f"{ts_str},{total_blocked:.4f},{total_suspicious:.4f},{total_benign:.4f}\n")
                     f.flush()
                     os.fsync(f.fileno())  # Force write to disk
                 
                 # Debug: log traffic values if blocked traffic exists
                 if total_blocked > 0.001:
-                    print(f"[TRAFFIC] Blocked: {total_blocked:.4f} Mbps | Allowed Attack: {total_allowed_attack:.4f} Mbps | Benign: {total_benign:.4f} Mbps")
+                    print(f"[TRAFFIC] Blocked: {total_blocked:.4f} Mbps | Suspicious: {total_suspicious:.4f} Mbps | Benign: {total_benign:.4f} Mbps")
                 if total_benign > 0.001:
                     print(f"[TRAFFIC] Benign: {total_benign:.4f} Mbps")
             except Exception as e:
@@ -910,38 +953,89 @@ class SimpleMonitor13(app_manager.RyuApp):
             if ip in self.blocked_ips:
                 self._unblock_ip(datapath, ip)
 
-    def _unblock_ip(self, datapath, ip_src):
-        """
-        Unblock an IP address by removing its DROP flow rule.
+    # def _unblock_ip(self, datapath, ip_src):
+    #     """
+    #     Unblock an IP address by removing its DROP flow rule.
         
-        Args:
-            datapath: Switch to remove rule from
-            ip_src: IP address to unblock
-        """
-        if ip_src not in self.blocked_ips:
-            return
+    #     Args:
+    #         datapath: Switch to remove rule from
+    #         ip_src: IP address to unblock
+    #     """
+    #     if ip_src not in self.blocked_ips:
+    #         return
             
-        # Remove from blocked_ips dictionary
-        del self.blocked_ips[ip_src]
+    #     # Remove from blocked_ips dictionary
+    #     del self.blocked_ips[ip_src]
+
+    #     # Add grace period to prevent immediate re-block
+    #     self.manual_allow[ip_src] = datetime.now().timestamp() + self.MANUAL_UNBLOCK_GRACE
         
-        # Remove blocking flow rule from switch
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
+    #     # Remove blocking flow rule from switch
+    #     ofproto = datapath.ofproto
+    #     parser = datapath.ofproto_parser
         
-        # Match the blocking rule
-        match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=ip_src)
+    #     # Match the blocking rule
+    #     match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=ip_src)
         
-        # Delete the flow
-        mod = parser.OFPFlowMod(
-            datapath=datapath,
-            command=ofproto.OFPFC_DELETE,
-            out_port=ofproto.OFPP_ANY,
-            out_group=ofproto.OFPG_ANY,
-            match=match
-        )
-        datapath.send_msg(mod)
+    #     # Delete the flow
+    #     mod = parser.OFPFlowMod(
+    #         datapath=datapath,
+    #         command=ofproto.OFPFC_DELETE,
+    #         out_port=ofproto.OFPP_ANY,
+    #         out_group=ofproto.OFPG_ANY,
+    #         match=match
+    #     )
+    #     datapath.send_msg(mod)
         
-        print(f"[UNBLOCK] Removed block for {ip_src}")
+    #     print(f"[UNBLOCK] Removed block for {ip_src}")
+    
+    def _unblock_ip(self, ip):
+        print(f"[INFO] Unblocking IP: {ip}")
+        
+        # 1. Gửi lệnh xóa luật DROP trên TOÀN BỘ Switch
+        # Phải đảm bảo Match y hệt lúc chặn (eth_type=0x0800, ipv4_src=ip)
+        for dpid in self.datapaths:
+            datapath = self.datapaths[dpid]
+            ofproto = datapath.ofproto
+            parser = datapath.ofproto_parser
+            
+            match = parser.OFPMatch(eth_type=0x0800, ipv4_src=ip)
+            
+            # Lệnh DELETE phải cực kỳ cụ thể
+            mod = parser.OFPFlowMod(
+                datapath=datapath,
+                command=ofproto.OFPFC_DELETE, # Lệnh xóa
+                out_port=ofproto.OFPP_ANY,
+                out_group=ofproto.OFPG_ANY,
+                priority=100,     # [QUAN TRỌNG] Priority phải khớp với Hard Rule
+                match=match,
+                table_id=0        # [QUAN TRỌNG] Phải chỉ rõ bảng 0
+            )
+            datapath.send_msg(mod)
+
+        # 2. Xóa khỏi danh sách quản lý Block
+        if ip in self.blocked_ips:
+            del self.blocked_ips[ip]
+
+        # 3. [FIX BUG] Dọn dẹp sạch sẽ "Tiền án" (History & Cache)
+        # Nếu không xóa, lần sau IP này xuất hiện sẽ bị tính toán sai dựa trên số liệu cũ
+        keys_to_remove = []
+        
+        # Quét sạch history liên quan đến IP này (cả chiều đi và chiều về nếu cần)
+        for key in list(self.flow_history.keys()):
+            # key structure: (dpid, src, dst, proto, priority)
+            # Kiểm tra nếu src_ip trùng với IP vừa unban
+            if key[1] == ip: 
+                keys_to_remove.append(key)
+        
+        # Thực hiện xóa
+        for key in keys_to_remove:
+            if key in self.flow_history:
+                del self.flow_history[key]
+            if key in self.active_flow_stats:
+                del self.active_flow_stats[key]
+                
+        print(f"-> Unban complete for {ip}. History cleared.")
 
     def _write_current_blocks(self):
         """
@@ -1081,7 +1175,7 @@ class SimpleMonitor13(app_manager.RyuApp):
         # Debug: count high-priority (blocked) flows
         blocked_flow_count = sum(1 for stat in body if stat.priority >= 100)
         if blocked_flow_count > 0:
-            print(f"[DEBUG] Found {blocked_flow_count} blocked flows in stats reply")
+            self._debug_print(f"[DEBUG] Found {blocked_flow_count} blocked flows in stats reply")
 
         # Best real-time display candidates for this stats cycle
         best_attack_pred = None
@@ -1090,6 +1184,7 @@ class SimpleMonitor13(app_manager.RyuApp):
         best_attack_pps = -1
         best_warning_pps = -1
         best_normal_pps = -1
+        suspicious_pairs = set()
 
         # Process each flow entry
         for stat in body:
@@ -1121,7 +1216,7 @@ class SimpleMonitor13(app_manager.RyuApp):
                     
                     # Debug: Always log blocked flow detection with all match fields
                     match_fields = {k: v for k, v in stat.match.items()}
-                    print(f"[DEBUG BLOCKED] Priority:{stat.priority} Match:{match_fields} Pkts:{packet_count} Bytes:{byte_count} Duration:{stat.duration_sec}s")
+                    self._debug_print(f"[DEBUG BLOCKED] Priority:{stat.priority} Match:{match_fields} Pkts:{packet_count} Bytes:{byte_count} Duration:{stat.duration_sec}s")
 
                     # Calculate blocked traffic rate
                     flow_key = (dpid, src_key, dst_key, ip_proto, stat.priority)
@@ -1138,12 +1233,9 @@ class SimpleMonitor13(app_manager.RyuApp):
                                 # No new bytes = attack stopped, rate = 0
                                 mbps_current = 0
                     else:
-                        # First time seeing this flow: estimate rate from duration
-                        # If flow has been running and has bytes, calculate average rate
-                        if stat.duration_sec > 0 and byte_count > 0:
-                            # Avoid division by very small time periods
-                            duration = max(stat.duration_sec + stat.duration_nsec / 1e9, 0.1)
-                            mbps_current = (byte_count * 8) / duration / 1000000
+                        # New flow after cache cleanup: do NOT infer rate from total counters.
+                        # Wait for the next report to compute deltas.
+                        mbps_current = 0
                     self.flow_history[flow_key] = (packet_count, byte_count, current_time)
 
                     # Determine label for dataset
@@ -1153,19 +1245,22 @@ class SimpleMonitor13(app_manager.RyuApp):
                         if self.blocked_ips[src_ip].get('reason') == "Manual-Block":
                             current_label = 'MANUALBLOCK'
                     dst_ip = stat.match.get('ipv4_dst', '0.0.0.0')
+                    if not self.firewall_enabled and src_ip:
+                        suspicious_pairs.add((src_ip, dst_ip))
 
                     # Log to dataset
                     self._log_full_dataset(dpid, src_ip, dst_ip, ip_proto, stat, 0, 0, current_label)
                     
                     # Update active flow stats for dashboard
+                    flow_type = 'Blocked' if self.firewall_enabled else 'Suspicious'
                     self.active_flow_stats[flow_key] = {
                         'rate': mbps_current,
-                        'type': 'Blocked',
+                        'type': flow_type,
                         'ts': current_time
                     }
                     
                     # Debug: log blocked flow stats
-                    if mbps_current > 0.001:
+                    if self.DEBUG_BLOCKED_FLOW_LOGS and mbps_current > 0.001:
                         print(f"[BLOCKED FLOW] {src_ip} -> DROP | Rate: {mbps_current:.4f} Mbps | Packets: {packet_count} | Bytes: {byte_count}")
                     continue
 
@@ -1182,6 +1277,8 @@ class SimpleMonitor13(app_manager.RyuApp):
                 pps_rate = 0
                 bps_rate = 0
                 mbps_current = 0
+                delta_pkts = None
+                delta_bytes = None
 
                 if flow_key in self.flow_history:
                     last_pkts, last_bytes, last_ts = self.flow_history[flow_key]
@@ -1200,6 +1297,12 @@ class SimpleMonitor13(app_manager.RyuApp):
                             mbps_current = 0
                             pps_rate = 0
                             bps_rate = 0
+                else:
+                    # New flow after cache cleanup: do NOT infer PPS from total counters.
+                    # Wait for the next report to compute deltas.
+                    mbps_current = 0
+                    pps_rate = 0
+                    bps_rate = 0
 
                 # Update flow history for next calculation
                 self.flow_history[flow_key] = (packet_count, byte_count, current_time)
@@ -1299,16 +1402,16 @@ class SimpleMonitor13(app_manager.RyuApp):
                     if tp_src in [80, 443, 8080]:
                         final_action = "ALLOW"
                         reason = f"Server Response (Port {tp_src})"
-                        display_priority = 2
+                        display_priority = 1
                         traffic_type = 'Benign'
 
                     # RULE 1: WHITELIST - Large Packets (Video/File Transfer)
                     # Large packets indicate legitimate bulk data transfer (video, files)
                     # Must be checked BEFORE volumetric to protect streaming traffic
-                    elif avg_pkt_size > self.WHITELIST_PKT_SIZE:
+                    elif self.ENABLE_WHITELIST_FILTER and avg_pkt_size > self.WHITELIST_PKT_SIZE:
                         final_action = "ALLOW"
                         reason = f"Whitelist: Large Pkt ({int(avg_pkt_size)}B)"
-                        display_priority = 2
+                        display_priority = 1
                         traffic_type = 'Benign'
 
                     # RULE 2: BLOCK - Volumetric Attack (hard threshold)
@@ -1320,8 +1423,10 @@ class SimpleMonitor13(app_manager.RyuApp):
 
                     # RULE 3: BLOCK - UDP Small Packet Flood
                     # Match backup/spec: block if PPS > threshold and avg packet size < 100B
+                    # This rule can be disabled via ENABLE_WHITELIST_FILTER flag
                     elif (
-                        ip_proto == 17
+                        self.ENABLE_WHITELIST_FILTER
+                        and ip_proto == 17
                         and pps_rate > self.UDP_FLOOD_PPS
                         and avg_pkt_size < self.UDP_FLOOD_SIZE
                     ):
@@ -1362,7 +1467,8 @@ class SimpleMonitor13(app_manager.RyuApp):
                                            label="Attack", reason=reason)
                         else:
                             # Firewall off: detect only, don't block
-                            traffic_type = 'Allowed_Attack'
+                            traffic_type = 'Suspicious'
+                            suspicious_pairs.add((ip_src, ip_dst))
                             self._log_attack(ip_src, ip_dst, ip_proto, packet_count,
                                            label="Passive Detect", reason=f"[FW-OFF] {reason}")
 
@@ -1370,8 +1476,13 @@ class SimpleMonitor13(app_manager.RyuApp):
                         log_label = "Warning" if self.firewall_enabled else "Passive Warning"
                         self._log_attack(ip_src, ip_dst, ip_proto, packet_count,
                                        label=log_label, reason=reason)
-                        if not self.firewall_enabled:
-                            traffic_type = 'Allowed_Attack'
+                        # Display warning traffic as orange (same as Suspicious)
+                        traffic_type = 'Suspicious'
+
+                    # Reclassify reverse traffic during suspicious detection (FW OFF)
+                    if not self.firewall_enabled and traffic_type == 'Benign':
+                        if (ip_dst, ip_src) in suspicious_pairs:
+                            traffic_type = 'Suspicious'
 
                     # -----------------------------------------
                     # STEP 4: SELECT CLI DISPLAY CANDIDATE
@@ -1387,6 +1498,8 @@ class SimpleMonitor13(app_manager.RyuApp):
                         result_str = "NORMAL"
                         if final_action == "BLOCK":
                             result_str = "ATTACK"
+                            if not self.firewall_enabled:
+                                result_str = "SUSPICIOUS"
                         elif final_action == "WARNING":
                             result_str = "WARNING"
                         elif final_action == "ALLOW":
@@ -1416,14 +1529,23 @@ class SimpleMonitor13(app_manager.RyuApp):
                                 best_normal_pps = pps_rate
                                 best_normal_pred = candidate
 
-                # Update active flow stats - ONLY if rate is higher or entry is stale (>1s)
-                # This prevents high-rate flows from being overwritten by zero-rate updates
+                # Update active flow stats - allow decay to 0 to avoid ghost traffic
                 existing = self.active_flow_stats.get(flow_key, {})
                 existing_rate = existing.get('rate', 0)
                 existing_ts = existing.get('ts', 0)
                 
-                # Update if: new rate is higher, OR entry is stale (>1s old), OR no existing entry
-                if mbps_current >= existing_rate or (current_time - existing_ts) > 1.0 or flow_key not in self.active_flow_stats:
+                # Update if: new rate is higher, OR entry is stale (>1s old), OR no existing entry,
+                # OR no new packets but previous rate was > 0 (decay to 0)
+                should_update = (
+                    mbps_current >= existing_rate
+                    or (current_time - existing_ts) > 1.0
+                    or flow_key not in self.active_flow_stats
+                )
+                if not should_update and mbps_current == 0 and existing_rate > 0:
+                    if delta_pkts is None or delta_pkts <= 0:
+                        should_update = True
+
+                if should_update:
                     self.active_flow_stats[flow_key] = {
                         'rate': mbps_current,
                         'type': traffic_type,
@@ -1433,7 +1555,7 @@ class SimpleMonitor13(app_manager.RyuApp):
                 # Debug: log high-rate benign flows AND verify storage
                 if traffic_type == 'Benign' and mbps_current > 0.01:
                     stored = self.active_flow_stats.get(flow_key, {})
-                    print(f"[DEBUG BENIGN] {src_key} -> {dst_key} | Rate: {mbps_current:.4f} Mbps | Stored: {stored.get('rate', 'N/A')} | Key: {flow_key}")
+                    self._debug_print(f"[DEBUG BENIGN] {src_key} -> {dst_key} | Rate: {mbps_current:.4f} Mbps | Stored: {stored.get('rate', 'N/A')} | Key: {flow_key}")
 
             except Exception as e:
                 # Catch any errors to prevent crash
@@ -1489,8 +1611,15 @@ class SimpleMonitor13(app_manager.RyuApp):
             self.pred_lock_until = time.time() + lock_duration
             self.pred_lock_priority = chosen_priority
         else:
+            # Fix stale traffic
             # No attack/warning/normal candidate in this cycle
             # Keep last displayed traffic as requested.
+            self.latest_pred = {
+                'src': '-', 'dst': '-', 'proto': '-', 
+                'rate': 0, 'result': 'IDLE', 'conf': '-', 'reason': '-',
+                'priority': -1
+            }
+            # Fix stale traffic
             self.pred_lock_priority = -1
 
         # UPDATE AGGREGATED STATISTICS
@@ -1640,6 +1769,10 @@ class SimpleMonitor13(app_manager.RyuApp):
             reason: Reason for blocking
         """
         current_time = datetime.now().timestamp()
+
+        # Respect manual unblock grace period
+        if ip_src in self.manual_allow and current_time < self.manual_allow[ip_src]:
+            return
         
         # Check if IP is already blocked and not expired
         if ip_src in self.blocked_ips:
@@ -1812,6 +1945,9 @@ class SimpleMonitor13(app_manager.RyuApp):
         if res == "ATTACK":
             info = f"PPS: {p['rate']} | Conf: {p['conf']} | {p['reason']}"
             p_alert_line("ATTACK", info, "\033[91m")  # Red
+        elif res == "SUSPICIOUS":
+            info = f"PPS: {p['rate']} | Conf: {p['conf']} | {p['reason']}"
+            p_alert_line("SUSPICIOUS", info, "\033[93m")  # Yellow/Orange
         elif res == "WARNING":
             info = f"PPS: {p['rate']} | Conf: {p['conf']} | {p['reason']}"
             p_alert_line("WARNING", info, "\033[93m")  # Yellow
