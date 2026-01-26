@@ -23,6 +23,13 @@ Architecture:
 Author: SDN DDoS Detection Project
 """
 
+"""
+# Config/threshold variables for the controller 
+# are grouped in __init__ under SECTION 2/3 as 
+# CONFIG_FLAGS, THRESHOLDS, and DISPLAY_TIMERS.
+"""
+
+
 # ============================================================
 # SECTION 1: IMPORT LIBRARIES
 # ============================================================
@@ -60,6 +67,7 @@ import time                                    # Sleep, timestamps
 import os                                      # File system operations
 import sys                                     # stdout for dashboard output
 import shutil                                  # File copy operations (unused but imported)
+import textwrap                                # Reason wrapping for CLI display
 
 
 class SimpleMonitor13(app_manager.RyuApp):
@@ -97,66 +105,72 @@ class SimpleMonitor13(app_manager.RyuApp):
         super(SimpleMonitor13, self).__init__(*args, **kwargs)
         
         # ============================================================
-        # SECTION 2: CONFIGURATION FLAGS
+        # SECTION 2: CONFIGURATION FLAGS (GROUPED)
         # ============================================================
-        
-        self.ENABLE_AI_PREDICT_LOG = True   # Enable/disable AI prediction logging to CSV
-        self.STATUS_INTERVAL = 1.0          # Dashboard refresh interval in seconds (increased from 1.0)
-        self.DEBUG_LOGS = False             # Enable/disable DEBUG lines in CLI
-        self.DEBUG_BLOCKED_FLOW_LOGS = False  # Enable/disable [BLOCKED FLOW] logs
-        self.MANUAL_UNBLOCK_GRACE = 60      # Seconds to prevent re-block after manual unblock
-        self.ENABLE_WHITELIST_FILTER = False  # Enable/disable whitelist filter for large-packet flows
-        
+        CONFIG_FLAGS = {
+            'ENABLE_AI_PREDICT_LOG': True,   # Enable/disable AI prediction logging to CSV
+            'STATUS_INTERVAL': 1.0,          # Dashboard refresh interval in seconds
+            'DEBUG_LOGS': False,             # Enable/disable DEBUG lines in CLI
+            'DEBUG_BLOCKED_FLOW_LOGS': False,  # Enable/disable [BLOCKED FLOW] logs
+            'MANUAL_UNBLOCK_GRACE': 60,      # Seconds to prevent re-block after manual unblock
+            'ENABLE_WHITELIST_FILTER': True,  # Enable/disable whitelist filter
+            'ENABLE_VOLUMETRIC_THRESHOLD': False,  # Enable/disable volumetric threshold rule
+        }
+
         # ============================================================
-        # SECTION 3: DETECTION THRESHOLDS (TUNING AREA)
+        # SECTION 3: DETECTION THRESHOLDS (GROUPED)
         # ============================================================
         # These values control detection sensitivity and accuracy.
         # Adjust based on network characteristics and attack patterns.
-        
-        # --- Basic Rate Thresholds ---
-        self.MIN_PPS_THRESHOLD = 150         # Minimum packets/sec to trigger analysis
-                                             # Below this: considered noise, ignored
-                                             # Affects: _flow_stats_reply_handler()
-        
-        self.VOLUMETRIC_THRESHOLD = 4000     # Maximum allowed packets/sec before hard block
-                                             # Above this: immediate block (volumetric attack)
-                                             # Affects: Rule 1 in decision logic
-        
-        # --- AI Confidence Thresholds ---
-        self.AI_CONFIDENCE_THRESHOLD = 0.75  # AI probability threshold for blocking
-                                             # If P(attack) >= 0.75: block the IP
-                                             # Affects: ai_verdict calculation
-        
-        self.AI_HIGH_CONFIDENCE = 0.99       # Threshold for "absolute certainty" detection
-                                             # Used to display "High PPS" reason in logs
-                                             # Affects: reason string in Rule 3
-        
-        self.AI_WARNING_THRESHOLD = 0.5      # Threshold for warning (suspicious traffic)
-                                             # If 0.5 <= P(attack) < 0.75: log warning only
-                                             # Affects: Rule 4 in decision logic
-        
-        # --- Whitelist Protection (Video/Large File Transfers) ---
-        self.WHITELIST_PKT_SIZE = 1000       # Minimum average packet size (bytes) to whitelist
-                                             # Large packets (>1000B) = likely video/file transfer
-                                             # Affects: Rule 2 (whitelist bypass)
-        
-        # --- Blacklist Detection Rules ---
-        # Rule 2b: UDP Small Packet Flood Detection
-        self.UDP_FLOOD_PPS = 1000            # Minimum PPS to trigger UDP flood check
-        self.UDP_FLOOD_SIZE = 100            # Maximum packet size for UDP flood classification
-                                             # Small packets + high rate = UDP flood attack
-        self.UDP_FLOOD_MIN_SIZE = 60         # (Unused) kept for compatibility with older configs
-        
-        # Rule 2c: TCP SYN Flood Detection
-        self.SYN_FLOOD_PPS = 300             # Minimum PPS to trigger SYN flood check
-                                             # SYN floods are effective at lower rates
-        self.SYN_FLOOD_SIZE = 120            # Maximum packet size for SYN flood classification
-                                             # SYN packets are typically 60-80 bytes
-        
-        # --- Dashboard Display Timer ---
-        self.PRED_LOCK_SECONDS = 3           # Seconds to hold prediction on CLI dashboard
-                                             # Prevents rapid flickering of status display
-        self.LOW_PRIORITY_ROTATE_SECONDS = 3 # Rotate NORMAL/WARNING display interval
+        THRESHOLDS = {
+            # --- Basic Rate Thresholds ---
+            'MIN_PPS_THRESHOLD': 150,        # Minimum packets/sec to trigger analysis
+            'VOLUMETRIC_THRESHOLD': 4000,    # Maximum allowed PPS before hard block
+
+            # --- AI Confidence Thresholds ---
+            'AI_CONFIDENCE_THRESHOLD': 0.75, # AI probability threshold for blocking
+            'AI_HIGH_CONFIDENCE': 0.99,      # Threshold for "absolute certainty"
+            'AI_WARNING_THRESHOLD': 0.5,     # Threshold for warning (suspicious traffic)
+
+            # --- Whitelist Protection (Video/Large File Transfers) ---
+            'WHITELIST_PKT_SIZE': 1000,      # Minimum avg packet size (bytes) to whitelist
+
+            # --- Blacklist Detection Rules ---
+            'UDP_FLOOD_PPS': 1000,           # Minimum PPS to trigger UDP flood check
+            'UDP_FLOOD_SIZE': 100,           # Max packet size for UDP flood classification
+            'UDP_FLOOD_MIN_SIZE': 60,        # (Unused) kept for compatibility
+            'SYN_FLOOD_PPS': 300,            # Minimum PPS to trigger SYN flood check
+            'SYN_FLOOD_SIZE': 120,           # Max packet size for SYN flood classification
+        }
+
+        # --- Dashboard Display Timer (Grouped) ---
+        DISPLAY_TIMERS = {
+            'PRED_LOCK_SECONDS': 3,          # Seconds to hold prediction on CLI dashboard
+            'LOW_PRIORITY_ROTATE_SECONDS': 3 # Rotate NORMAL/WARNING display interval
+        }
+
+        self.ENABLE_AI_PREDICT_LOG = CONFIG_FLAGS['ENABLE_AI_PREDICT_LOG']
+        self.STATUS_INTERVAL = CONFIG_FLAGS['STATUS_INTERVAL']
+        self.DEBUG_LOGS = CONFIG_FLAGS['DEBUG_LOGS']
+        self.DEBUG_BLOCKED_FLOW_LOGS = CONFIG_FLAGS['DEBUG_BLOCKED_FLOW_LOGS']
+        self.MANUAL_UNBLOCK_GRACE = CONFIG_FLAGS['MANUAL_UNBLOCK_GRACE']
+        self.ENABLE_WHITELIST_FILTER = CONFIG_FLAGS['ENABLE_WHITELIST_FILTER']
+        self.ENABLE_VOLUMETRIC_THRESHOLD = CONFIG_FLAGS['ENABLE_VOLUMETRIC_THRESHOLD']
+
+        self.MIN_PPS_THRESHOLD = THRESHOLDS['MIN_PPS_THRESHOLD']
+        self.VOLUMETRIC_THRESHOLD = THRESHOLDS['VOLUMETRIC_THRESHOLD']
+        self.AI_CONFIDENCE_THRESHOLD = THRESHOLDS['AI_CONFIDENCE_THRESHOLD']
+        self.AI_HIGH_CONFIDENCE = THRESHOLDS['AI_HIGH_CONFIDENCE']
+        self.AI_WARNING_THRESHOLD = THRESHOLDS['AI_WARNING_THRESHOLD']
+        self.WHITELIST_PKT_SIZE = THRESHOLDS['WHITELIST_PKT_SIZE']
+        self.UDP_FLOOD_PPS = THRESHOLDS['UDP_FLOOD_PPS']
+        self.UDP_FLOOD_SIZE = THRESHOLDS['UDP_FLOOD_SIZE']
+        self.UDP_FLOOD_MIN_SIZE = THRESHOLDS['UDP_FLOOD_MIN_SIZE']
+        self.SYN_FLOOD_PPS = THRESHOLDS['SYN_FLOOD_PPS']
+        self.SYN_FLOOD_SIZE = THRESHOLDS['SYN_FLOOD_SIZE']
+
+        self.PRED_LOCK_SECONDS = DISPLAY_TIMERS['PRED_LOCK_SECONDS']
+        self.LOW_PRIORITY_ROTATE_SECONDS = DISPLAY_TIMERS['LOW_PRIORITY_ROTATE_SECONDS']
         
         # ============================================================
         # SECTION 4: RUNTIME STATE VARIABLES
@@ -203,6 +217,9 @@ class SimpleMonitor13(app_manager.RyuApp):
         self.pred_lock_priority = -1         # Priority level of locked prediction
         self.last_low_priority = "NORMAL"    # Last shown low-priority type (NORMAL/WARNING)
         self.last_low_rotate_ts = 0          # Last time low-priority display rotated
+        self.last_monitor_flows = []         # Cached top flows for real-time monitor
+        self.last_monitor_update = 0         # Timestamp of last non-empty monitor snapshot
+        self.last_blocked_proto = {}         # Remember last known proto per blocked IP
         
         # ============================================================
         # SECTION 5: FILE PATH CONFIGURATION
@@ -785,10 +802,22 @@ class SimpleMonitor13(app_manager.RyuApp):
             for key in list(self.active_flow_stats.keys()):
                 info = self.active_flow_stats[key]
                 
-                # Remove stale entries (older than 2 seconds for faster response)
-                if monitor_ts - info['ts'] > 1.5:
+                # Remove stale entries (blocked flows are kept longer for display)
+                info_type = info.get('type', 'Benign')
+                stale_limit = 15.0 if info_type == 'Blocked' else 1.5
+                if monitor_ts - info['ts'] > stale_limit:
                     stale_count += 1
                     del self.active_flow_stats[key]
+                    continue
+
+                # FIREWALL OFF: aggregate all traffic directly (no low-rate filtering)
+                if not self.firewall_enabled:
+                    rate = info.get('rate', 0)
+                    if rate > 0:
+                        if info.get('type') in ['Suspicious', 'Blocked']:
+                            total_suspicious += rate
+                        else:
+                            total_benign += rate
                     continue
                 
                 # Categorize traffic by type
@@ -1051,7 +1080,7 @@ class SimpleMonitor13(app_manager.RyuApp):
                     time_left = max(0, int(data['unlock_time'] - current_ts))
                     duration = data.get('duration', 60)
                     proto_num = data.get('proto', 0)
-                    proto_map = {1: 'ICMP', 6: 'TCP', 17: 'UDP', 0: 'ALL'}
+                    proto_map = {0: 'MANUAL', 1: 'ICMP', 6: 'TCP', 17: 'UDP'}
                     proto_str = proto_map.get(proto_num, str(proto_num))
                     reason = data.get('reason', 'Unknown').replace(',', ';')  # Escape commas
                     
@@ -1211,6 +1240,12 @@ class SimpleMonitor13(app_manager.RyuApp):
                     src_key = stat.match.get('ipv4_src', '0.0.0.0')
                     dst_key = 'BLOCK'
 
+                    if ip_proto == 0:
+                        if src_key in self.blocked_ips:
+                            ip_proto = self.blocked_ips[src_key].get('proto', 0)
+                        elif src_key in self.last_blocked_proto:
+                            ip_proto = self.last_blocked_proto.get(src_key, 0)
+
                     packet_count = stat.packet_count
                     byte_count = stat.byte_count
                     
@@ -1221,21 +1256,26 @@ class SimpleMonitor13(app_manager.RyuApp):
                     # Calculate blocked traffic rate
                     flow_key = (dpid, src_key, dst_key, ip_proto, stat.priority)
                     mbps_current = 0
+                    pps_current = 0
                     if flow_key in self.flow_history:
                         last_pkts, last_bytes, last_ts = self.flow_history[flow_key]
                         delta_bytes = byte_count - last_bytes
+                        delta_pkts = packet_count - last_pkts
                         dt = current_time - last_ts
                         if 0.1 < dt < 3.0:
                             # Only show rate if there are new bytes (attack still ongoing)
                             if delta_bytes > 0:
                                 mbps_current = (delta_bytes * 8) / dt / 1000000
+                                pps_current = delta_pkts / dt if delta_pkts > 0 else 0
                             else:
                                 # No new bytes = attack stopped, rate = 0
                                 mbps_current = 0
+                                pps_current = 0
                     else:
                         # New flow after cache cleanup: do NOT infer rate from total counters.
                         # Wait for the next report to compute deltas.
                         mbps_current = 0
+                        pps_current = 0
                     self.flow_history[flow_key] = (packet_count, byte_count, current_time)
 
                     # Determine label for dataset
@@ -1253,11 +1293,33 @@ class SimpleMonitor13(app_manager.RyuApp):
                     
                     # Update active flow stats for dashboard
                     flow_type = 'Blocked' if self.firewall_enabled else 'Suspicious'
+                    blocked_reason = "Detected"
+                    blocked_ai_conf = None
+                    if src_key in self.blocked_ips:
+                        blocked_reason = self.blocked_ips[src_key].get('reason', blocked_reason)
+                        blocked_ai_conf = self.blocked_ips[src_key].get('ai_conf')
+                    rule_verdict = "NORMAL"
+                    ai_verdict = "-"
+                    ai_conf = blocked_ai_conf
+                    if blocked_reason.startswith("Trigger:") or blocked_reason.startswith("Policy:"):
+                        rule_verdict = "BLOCK"
+                    elif blocked_reason.startswith("AI Classification:"):
+                        ai_verdict = "ATTACK"
+                    if ai_conf is not None and ai_verdict == "-":
+                        ai_verdict = "SCORE"
                     self.active_flow_stats[flow_key] = {
                         'rate': mbps_current,
+                        'pps': pps_current,
+                        'proto': ip_proto,
                         'type': flow_type,
+                        'reason': blocked_reason,
+                        'rule_verdict': rule_verdict,
+                        'ai_verdict': ai_verdict,
+                        'ai_conf': ai_conf,
                         'ts': current_time
                     }
+                    if ip_proto != 0:
+                        self.last_blocked_proto[src_key] = ip_proto
                     
                     # Debug: log blocked flow stats
                     if self.DEBUG_BLOCKED_FLOW_LOGS and mbps_current > 0.001:
@@ -1308,13 +1370,23 @@ class SimpleMonitor13(app_manager.RyuApp):
                 self.flow_history[flow_key] = (packet_count, byte_count, current_time)
 
                 traffic_type = 'Benign'  # Default classification
+                flow_reason = self.active_flow_stats.get(flow_key, {}).get('reason', '')
+                flow_rule_verdict = self.active_flow_stats.get(flow_key, {}).get('rule_verdict', 'NORMAL')
+                flow_ai_verdict = self.active_flow_stats.get(flow_key, {}).get('ai_verdict', '-')
+                flow_ai_conf = self.active_flow_stats.get(flow_key, {}).get('ai_conf')
 
                 # Skip ICMP Echo Reply (type 0) - these are responses, not attacks
                 icmp_type_stat = stat.match.get('icmpv4_type')
                 if ip_proto == 1 and icmp_type_stat == 0:
                     self.active_flow_stats[flow_key] = {
                         'rate': mbps_current,
+                        'pps': pps_rate,
+                        'proto': ip_proto,
                         'type': 'Benign',
+                        'reason': '',
+                        'rule_verdict': 'NORMAL',
+                        'ai_verdict': '-',
+                        'ai_conf': None,
                         'ts': current_time
                     }
                     continue
@@ -1323,7 +1395,13 @@ class SimpleMonitor13(app_manager.RyuApp):
                 if 'ipv4_src' not in stat.match:
                     self.active_flow_stats[flow_key] = {
                         'rate': mbps_current,
+                        'pps': pps_rate,
+                        'proto': ip_proto,
                         'type': 'Benign',
+                        'reason': '',
+                        'rule_verdict': 'NORMAL',
+                        'ai_verdict': '-',
+                        'ai_conf': None,
                         'ts': current_time
                     }
                     continue
@@ -1391,7 +1469,7 @@ class SimpleMonitor13(app_manager.RyuApp):
                     # STEP 2: DECISION RULES
                     # -----------------------------------------
                     final_action = "MONITOR"
-                    reason = f"Safe (Conf: {ai_conf_score:.2f})"
+                    reason = f"AI Classification: Benign (Confidence: {ai_conf_score:.2f})"
                     display_priority = 1
 
                     # Get source port for whitelist check
@@ -1401,25 +1479,29 @@ class SimpleMonitor13(app_manager.RyuApp):
                     # Traffic from service ports (server responses) is always allowed
                     if tp_src in [80, 443, 8080]:
                         final_action = "ALLOW"
-                        reason = f"Server Response (Port {tp_src})"
+                        reason = f"Policy: Allow - Server Response (Port {tp_src})"
                         display_priority = 1
                         traffic_type = 'Benign'
+                        flow_rule_verdict = "ALLOW"
 
                     # RULE 1: WHITELIST - Large Packets (Video/File Transfer)
                     # Large packets indicate legitimate bulk data transfer (video, files)
                     # Must be checked BEFORE volumetric to protect streaming traffic
                     elif self.ENABLE_WHITELIST_FILTER and avg_pkt_size > self.WHITELIST_PKT_SIZE:
                         final_action = "ALLOW"
-                        reason = f"Whitelist: Large Pkt ({int(avg_pkt_size)}B)"
+                        reason = f"Policy: Whitelist - Large Packet ({int(avg_pkt_size)}B)"
                         display_priority = 1
                         traffic_type = 'Benign'
+                        flow_rule_verdict = "ALLOW"
 
                     # RULE 2: BLOCK - Volumetric Attack (hard threshold)
                     # Only applies to small-packet floods (not video/file transfers)
-                    elif pps_rate > self.VOLUMETRIC_THRESHOLD:
+                    elif self.ENABLE_VOLUMETRIC_THRESHOLD and pps_rate > self.VOLUMETRIC_THRESHOLD:
                         final_action = "BLOCK"
-                        reason = f"Volumetric Flood ({int(pps_rate)}pps, {int(avg_pkt_size)}B)"
+                        reason = f"Trigger: Rate Threshold Exceeded ({int(pps_rate)}pps, {int(avg_pkt_size)}B)"
                         display_priority = 3
+                        flow_rule_verdict = "BLOCK"
+                        flow_ai_conf = ai_conf_score
 
                     # RULE 3: BLOCK - UDP Small Packet Flood
                     # Match backup/spec: block if PPS > threshold and avg packet size < 100B
@@ -1431,29 +1513,46 @@ class SimpleMonitor13(app_manager.RyuApp):
                         and avg_pkt_size < self.UDP_FLOOD_SIZE
                     ):
                         final_action = "BLOCK"
-                        reason = f"Small UDP Flood ({int(avg_pkt_size)}B)"
+                        reason = f"Trigger: Small UDP Flood ({int(avg_pkt_size)}B)"
                         display_priority = 3
+                        flow_rule_verdict = "BLOCK"
+                        flow_ai_conf = ai_conf_score
 
                     # RULE 4: BLOCK - TCP SYN Flood
                     elif ip_proto == 6 and pps_rate > self.SYN_FLOOD_PPS and avg_pkt_size < self.SYN_FLOOD_SIZE:
                         final_action = "BLOCK"
-                        reason = f"TCP SYN Flood Detect ({int(avg_pkt_size)}B)"
+                        reason = f"Trigger: TCP SYN Flood ({int(avg_pkt_size)}B)"
                         display_priority = 3
+                        flow_rule_verdict = "BLOCK"
+                        flow_ai_conf = ai_conf_score
 
                     # RULE 5: BLOCK - AI Detection
                     elif ai_verdict == "AI_ATTACK":
                         final_action = "BLOCK"
                         if ai_conf_score > self.AI_HIGH_CONFIDENCE:
-                            reason = f"AI Detect + High PPS (Conf: {ai_conf_score:.2f})"
+                            reason = f"AI Classification: Attack (Confidence: {ai_conf_score:.2f}, High PPS)"
                         else:
-                            reason = f"AI Detected (Conf: {ai_conf_score:.2f})"
+                            reason = f"AI Classification: Attack (Confidence: {ai_conf_score:.2f})"
                         display_priority = 3
+                        flow_ai_verdict = "ATTACK"
+                        flow_ai_conf = ai_conf_score
 
                     # RULE 6: WARNING - Suspicious Traffic
                     elif ai_conf_score > self.AI_WARNING_THRESHOLD:
                         final_action = "WARNING"
-                        reason = f"Suspicious (Conf: {ai_conf_score:.2f})"
+                        reason = f"AI Classification: Suspicious (Confidence: {ai_conf_score:.2f})"
                         display_priority = 2
+                        flow_ai_verdict = "WARNING"
+                        flow_ai_conf = ai_conf_score
+
+                    # Prefer AI reason when AI confidence exceeds threshold
+                    if final_action == "BLOCK" and ai_conf_score >= self.AI_CONFIDENCE_THRESHOLD:
+                        if ai_conf_score > self.AI_HIGH_CONFIDENCE:
+                            reason = f"AI Classification: Attack (Confidence: {ai_conf_score:.2f}, High PPS)"
+                        else:
+                            reason = f"AI Classification: Attack (Confidence: {ai_conf_score:.2f})"
+                        flow_ai_verdict = "ATTACK"
+                        flow_ai_conf = ai_conf_score
 
                     # -----------------------------------------
                     # STEP 3: EXECUTE ACTION
@@ -1462,7 +1561,7 @@ class SimpleMonitor13(app_manager.RyuApp):
                         if self.firewall_enabled:
                             traffic_type = 'Blocked'
                             # Install blocking flow and log attack
-                            self._block_ip(ev.msg.datapath, ip_src, ip_dst, ip_proto, reason=reason)
+                            self._block_ip(ev.msg.datapath, ip_src, ip_dst, ip_proto, reason=reason, ai_conf=flow_ai_conf)
                             self._log_attack(ip_src, ip_dst, ip_proto, packet_count,
                                            label="Attack", reason=reason)
                         else:
@@ -1483,6 +1582,11 @@ class SimpleMonitor13(app_manager.RyuApp):
                     if not self.firewall_enabled and traffic_type == 'Benign':
                         if (ip_dst, ip_src) in suspicious_pairs:
                             traffic_type = 'Suspicious'
+
+                    if traffic_type in ['Blocked', 'Suspicious']:
+                        flow_reason = reason
+                    else:
+                        flow_reason = ''
 
                     # -----------------------------------------
                     # STEP 4: SELECT CLI DISPLAY CANDIDATE
@@ -1548,7 +1652,13 @@ class SimpleMonitor13(app_manager.RyuApp):
                 if should_update:
                     self.active_flow_stats[flow_key] = {
                         'rate': mbps_current,
+                        'pps': pps_rate,
+                        'proto': ip_proto,
                         'type': traffic_type,
+                        'reason': flow_reason,
+                        'rule_verdict': flow_rule_verdict,
+                        'ai_verdict': flow_ai_verdict,
+                        'ai_conf': flow_ai_conf,
                         'ts': current_time
                     }
                 
@@ -1714,7 +1824,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             proto: Protocol number used in attack
         """
         # Map protocol number to name
-        proto_map = {1: 'ICMP', 6: 'TCP', 17: 'UDP'}
+        proto_map = {0: 'MANUAL', 1: 'ICMP', 6: 'TCP', 17: 'UDP'}
         proto_name = proto_map.get(proto, 'UNK')
         timestamp = datetime.now().strftime('%H:%M:%S')
         
@@ -1752,7 +1862,7 @@ class SimpleMonitor13(app_manager.RyuApp):
     # SECTION 16: IP BLOCKING IMPLEMENTATION
     # ============================================================
 
-    def _block_ip(self, datapath, ip_src, ip_dst, proto, reason="Unknown"):
+    def _block_ip(self, datapath, ip_src, ip_dst, proto, reason="Unknown", ai_conf=None):
         """
         Block an IP address by installing a DROP flow rule.
         
@@ -1811,8 +1921,10 @@ class SimpleMonitor13(app_manager.RyuApp):
             'victim': ip_dst,
             'proto': proto,
             'duration': duration,
-            'reason': reason
+            'reason': reason,
+            'ai_conf': ai_conf
         }
+        self.last_blocked_proto[ip_src] = proto
         
         # INSTALL BLOCKING FLOW RULE
         ofproto = datapath.ofproto
@@ -1877,7 +1989,7 @@ class SimpleMonitor13(app_manager.RyuApp):
         
         Displays:
             - System status (firewall state, flow counts)
-            - Real-time inspection results (AI + rules)
+            - Real-time traffic monitor (top flows)
             - Currently blocked IPs
             - Top offenders history
             
@@ -1890,7 +2002,7 @@ class SimpleMonitor13(app_manager.RyuApp):
         sys.stdout.write("\033[H\033[J")
         
         now = datetime.now().strftime('%H:%M:%S')
-        W = 110      # Total width
+        W = 125      # Total width
         IW = W - 4   # Inner width (minus borders)
 
         # Helper function: horizontal line
@@ -1917,7 +2029,7 @@ class SimpleMonitor13(app_manager.RyuApp):
         # === HEADER ===
         print(f"╔{'═'*(W-2)}╗")
         fw_status = "ON" if self.firewall_enabled else "OFF"
-        title = f"SDN AI-GUARD [FW: {fw_status}]"
+        title = "SDN AI-GUARD by Group 01"
         time_str = f"Time: {now}"
         gap = IW - len(title) - len(time_str)
         if gap < 0:
@@ -1925,52 +2037,171 @@ class SimpleMonitor13(app_manager.RyuApp):
         print(f"║ {title}{' '*gap}{time_str} ║")
         h_line()
 
+        # === CONFIG STATUS ===
+        p_line("CONFIG STATUS")
+        thresholds_msg = (
+            f"> FIREWALL: {fw_status} | "
+            f"MIN_PPS_THRESHOLD: {self.MIN_PPS_THRESHOLD} | "
+            f"VOLUMETRIC_THRESHOLD: {self.VOLUMETRIC_THRESHOLD} | "
+            f"ENABLE_VOLUMETRIC_THRESHOLD: {self.ENABLE_VOLUMETRIC_THRESHOLD}"
+        )
+        p_line(thresholds_msg)
+        whitelist_msg = f"> ENABLE_WHITELIST_FILTER: {self.ENABLE_WHITELIST_FILTER}"
+        p_line(whitelist_msg)
+        h_line()
+
         # === SYSTEM STATUS ===
         p_line("SYSTEM STATUS")
-        stats_msg = f"> Total Flows: {self.traffic_summary['Total']} (ICMP:{self.traffic_summary['ICMP']} TCP:{self.traffic_summary['TCP']} UDP:{self.traffic_summary['UDP']})"
+        stats_msg = f"> Flow Inventory: {self.traffic_summary['Total']} (ICMP:{self.traffic_summary['ICMP']} TCP:{self.traffic_summary['TCP']} UDP:{self.traffic_summary['UDP']})"
         p_line(stats_msg)
         h_line()
 
         # === FIREWALL WARNING (if disabled) ===
         if not self.firewall_enabled:
-            p_alert_line("MONITORING", "Firewall OFF - Passive Detection Mode", "\033[93m")
+            p_alert_line("MODE", "Firewall Disabled - Monitoring Only", "\033[93m")
             h_line()
 
-        # === REAL-TIME INSPECTION ===
-        p = self.latest_pred
-        res = p['result']
-        p_line("REAL-TIME INSPECTION (AI + Rule Hybrid)")
-        p_line(f"Source: {p['src']:<15}  ->  Dest: {p['dst']:<15}")
+        # === REAL-TIME TRAFFIC MONITOR (Top 5 Flows) ===
+        p_line("REAL-TIME TRAFFIC MONITOR (Top 5 Flows)")
+        col_time_w = 8
+        col_ip_w = 12
+        col_proto_w = 9
+        col_pps_w = 6
+        col_rate_w = 10
+        fixed_len = (
+            1 + 10 + 2 + 1 +  # [TYPE] and space
+            col_time_w + 1 +
+            col_ip_w + 4 + col_ip_w + 3 +
+            col_proto_w + 3 +
+            col_pps_w + 3 +
+            col_rate_w + 3 +
+            len("Reason")
+        )
+        reason_w = max(10, IW - fixed_len)
+        header = (
+            f"[{('TYPE').ljust(10)}] {('Time').ljust(col_time_w)} {('Source').ljust(col_ip_w)} -> {('Dest').ljust(col_ip_w)} | "
+            f"{('Protocol').ljust(col_proto_w)} | {('PPS').rjust(col_pps_w)} | {('Rate(Mbps)').rjust(col_rate_w)} | {('Reason').ljust(reason_w)}"
+        )
+        p_line(header)
+        p_line("-" * (IW-2))
+        now_ts = time.time()
+        flow_rows = []
+        for key, info in self.active_flow_stats.items():
+            rate = info.get('rate', 0)
+            pps_val = info.get('pps', 0)
+            if pps_val <= 0:
+                continue
+            info_type = info.get('type', 'Benign')
+            stale_limit = 15.0 if info_type == 'Blocked' else 1.5
+            if now_ts - info.get('ts', 0) > stale_limit:
+                continue
+            src = key[1] if len(key) > 1 else '-'
+            dst = key[2] if len(key) > 2 else '-'
+            proto = info.get('proto', key[3] if len(key) > 3 else 0)
+            flow_rows.append({
+                'src': src,
+                'dst': dst,
+                'proto': proto,
+                'rate': rate,
+                'pps': pps_val,
+                'type': info.get('type', 'Benign'),
+                'reason': info.get('reason', ''),
+                'rule_verdict': info.get('rule_verdict', 'NORMAL'),
+                'ai_verdict': info.get('ai_verdict', '-'),
+                'ai_conf': info.get('ai_conf'),
+                'ts': info.get('ts', now_ts)
+            })
 
-        if res == "ATTACK":
-            info = f"PPS: {p['rate']} | Conf: {p['conf']} | {p['reason']}"
-            p_alert_line("ATTACK", info, "\033[91m")  # Red
-        elif res == "SUSPICIOUS":
-            info = f"PPS: {p['rate']} | Conf: {p['conf']} | {p['reason']}"
-            p_alert_line("SUSPICIOUS", info, "\033[93m")  # Yellow/Orange
-        elif res == "WARNING":
-            info = f"PPS: {p['rate']} | Conf: {p['conf']} | {p['reason']}"
-            p_alert_line("WARNING", info, "\033[93m")  # Yellow
-        elif res == "NORMAL":
-            if p['reason'] != '-':
-                info = f"PPS: {p['rate']} | Conf: {p['conf']} | {p['reason']}"
-            else:
-                info = f"Proto: {p['proto']} | Rate: {p['rate']} pps"
-            p_alert_line("NORMAL", info, "\033[92m")  # Green
+        type_priority = {'Blocked': 2, 'Suspicious': 1, 'Benign': 0}
+        flow_rows.sort(
+            key=lambda x: (-type_priority.get(x['type'], 0), -x['rate'])
+        )
+        top_flows = flow_rows[:5]
+        if top_flows:
+            self.last_monitor_flows = top_flows
+            self.last_monitor_update = now_ts
+
+        proto_map = {0: 'MANUAL', 1: 'ICMP', 6: 'TCP', 17: 'UDP'}
+        type_color = {
+            'Blocked': "\033[91m",
+            'Suspicious': "\033[93m",
+            'Benign': "\033[92m",
+        }
+        type_label = {
+            'Blocked': "BLOCKED",
+            'Suspicious': "SUSPICIOUS",
+            'Benign': "BENIGN",
+        }
+
+        display_flows = top_flows if top_flows else self.last_monitor_flows
+        monitor_lines = []
+
+        if not display_flows:
+            monitor_lines.append({'type': 'line', 'text': "[IDLE] Status: Awaiting traffic..."})
         else:
-            p_line(f"[IDLE] Waiting for traffic > {self.MIN_PPS_THRESHOLD} pps...")
+            for flow in display_flows:
+                proto_num = int(flow['proto']) if str(flow['proto']).isdigit() else flow['proto']
+                proto_name = proto_map.get(proto_num, 'UNK')
+                proto_name = f"{proto_name} ({proto_num})"
+                ts_str = datetime.fromtimestamp(flow.get('ts', now_ts)).strftime('%H:%M:%S')
+                pps_str = f"{flow['pps']:.0f}"
+                rate_str = f"{flow['rate']:.3f}"
+                base_info = (
+                    f"{ts_str.ljust(col_time_w)} {str(flow['src']).ljust(col_ip_w)} -> {str(flow['dst']).ljust(col_ip_w)} | "
+                    f"{proto_name.ljust(col_proto_w)} | {pps_str.rjust(col_pps_w)} | {rate_str.rjust(col_rate_w)}"
+                )
+                label = type_label.get(flow['type'], "BENIGN").ljust(10)
+                color = type_color.get(flow['type'], "\033[92m")
+                reason_text = flow.get('reason', '') or 'N/A'
+                if flow['type'] in ['Blocked', 'Suspicious']:
+                    ai_conf = flow.get('ai_conf')
+                    if flow['type'] == 'Blocked':
+                        ai_score = f"{ai_conf:.2f}" if isinstance(ai_conf, (int, float)) else "-"
+                        reason_text = f"R:{reason_text} | AI:{ai_score}"
+                reason_chunks = textwrap.wrap(
+                    reason_text,
+                    width=reason_w,
+                    break_long_words=False,
+                    break_on_hyphens=False
+                ) or [""]
+                info = f"{base_info} | {reason_chunks[0].ljust(reason_w)}"
+
+                monitor_lines.append({'type': 'alert', 'label': label, 'info': info, 'color': color})
+                if len(reason_chunks) > 1:
+                    cont_prefix = " " * len(base_info) + " | "
+                    for chunk in reason_chunks[1:]:
+                        monitor_lines.append({
+                            'type': 'line',
+                            'text': f"{cont_prefix}{chunk.ljust(reason_w)}"
+                        })
+
+        # Render exactly 10 lines to avoid box jumping
+        MAX_MONITOR_LINES = 10
+        lines_rendered = 0
+        for item in monitor_lines:
+            if lines_rendered >= MAX_MONITOR_LINES:
+                break
+            if item['type'] == 'alert':
+                p_alert_line(item['label'], item['info'], item['color'])
+            else:
+                p_line(item['text'])
+            lines_rendered += 1
+
+        while lines_rendered < MAX_MONITOR_LINES:
+            p_line("")
+            lines_rendered += 1
 
         h_line()
 
         # === CURRENTLY BLOCKED IPs ===
         if self.firewall_enabled:
-            p_line("CURRENTLY BLOCKED (Mitigation Active)")
+            p_line("ACTIVE BLOCKS (Mitigation Enabled)")
             if not self.blocked_ips:
-                p_line("[ No active threats blocked ]")
+                p_line("[ No active blocks ]")
             else:
                 current_ts = datetime.now().timestamp()
                 count = 0
-                header = f"   {'IP Address':<15} | {'Time Left':<9} | {'Proto':<5} | {'Reason'}"
+                header = f"   {'IP Address':<15} | {'Time Left':<9} | {'Protocol':<8} | {'Trigger'}"
                 p_line(header)
                 p_line("-" * (IW-2))
                 
@@ -1992,7 +2223,7 @@ class SimpleMonitor13(app_manager.RyuApp):
                         
                     if rem > 0:
                         time_display = f"{rem}s/{duration}s"
-                        row = f"🚫 {ip:<15} | {time_display:<9} | {proto_str:<5} | {reason}"
+                        row = f"🚫 {ip:<15} | {time_display:<9} | {proto_str:<8} | {reason}"
                         p_line(row)
                         count += 1
             h_line()

@@ -46,7 +46,8 @@ FIREWALL_STATUS_FILE = os.path.join(PROJECT_ROOT, 'attack_log', 'firewall_status
 st.markdown(
         """
 <style>
-    .stApp { background-color: #0E1117; color: #FAFAFA; }
+    .stApp { background-color: #0E1117; color: #FAFAFA; font-family: "Segoe UI", "Segoe UI Variable", "Tahoma", "Arial", sans-serif; }
+    h1, h2, h3, h4, h5, h6, p, span, div, label { font-family: "Segoe UI", "Segoe UI Variable", "Tahoma", "Arial", sans-serif; }
     .stButton>button { width: 100%; border-radius: 6px; }
 
     /* Top status bar (matches screenshot style) */
@@ -59,7 +60,7 @@ st.markdown(
     }
     .status-grid {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(5, minmax(0, 1fr));
         gap: 14px;
         align-items: start;
     }
@@ -347,6 +348,7 @@ cards = [
     {"title": "System Status", "value": status_text, "pill_text": status_pill, "pill_variant": status_variant},
     {"title": "Malicious IPs", "value": str(malicious_ips), "pill_text": None, "pill_variant": "ok"},
     {"title": "Blocked Traffic", "value": format_speed(float(curr_blocked)), "pill_text": "Stopped", "pill_variant": "ok"},
+    {"title": "Suspicious Traffic", "value": format_speed(float(curr_suspicious)), "pill_text": "Detected", "pill_variant": "warning"},
     {"title": "Benign Traffic", "value": format_speed(float(curr_benign)), "pill_text": "Clean", "pill_variant": "ok"},
 ]
 
@@ -363,29 +365,39 @@ if not df_traffic.empty:
     df_plot['Blocked_MBps'] = pd.to_numeric(df_plot['Blocked_MBps'], errors='coerce').fillna(0.0)
     df_plot['Suspicious_MBps'] = pd.to_numeric(df_plot['Suspicious_MBps'], errors='coerce').fillna(0.0)
     df_plot['Benign_MBps'] = pd.to_numeric(df_plot['Benign_MBps'], errors='coerce').fillna(0.0)
+    max_seq = int(df_plot['Sequence'].max()) if not df_plot.empty else 0
+    df_plot['Sequence_RTL'] = max_seq - df_plot['Sequence'] + 1
 
     max_val = float(df_plot[['Blocked_MBps', 'Suspicious_MBps', 'Benign_MBps']].max().max())
     y_max = max(5.0, max_val * 1.2)
 
     df_long = df_plot.melt(
-        id_vars=['Sequence'],
+        id_vars=['Sequence_RTL'],
         value_vars=['Blocked_MBps', 'Suspicious_MBps', 'Benign_MBps'],
         var_name='Type',
         value_name='Value'
     )
     df_long['Type'] = df_long['Type'].replace({
-        'Blocked_MBps': 'Blocked Attack (Red)',
-        'Suspicious_MBps': 'Detected Unblocked (Orange)',
-        'Benign_MBps': 'Benign Traffic (Green)'
+        'Blocked_MBps': 'Blocked Traffic',
+        'Suspicious_MBps': 'Suspicious Traffic',
+        'Benign_MBps': 'Benign Traffic'
     })
 
-    domain = ['Blocked Attack (Red)', 'Detected Unblocked (Orange)', 'Benign Traffic (Green)']
+    domain = ['Blocked Traffic', 'Suspicious Traffic', 'Benign Traffic']
     colors = ['#EF4444', '#F59E0B', '#22C55E']
 
     base = alt.Chart(df_long).encode(
         x=alt.X(
-            'Sequence:Q',
-            axis=alt.Axis(title=None, labels=False, ticks=False, grid=False),
+            'Sequence_RTL:Q',
+            axis=alt.Axis(
+                title=None,
+                labels=True,
+                ticks=True,
+                grid=False,
+                values=[1, max_seq + 1],
+                labelExpr='datum.value - 1'
+            ),
+            scale=alt.Scale(reverse=True),
         ),
         y=alt.Y(
             'Value:Q',
@@ -404,7 +416,7 @@ if not df_traffic.empty:
     )
 
     blocked_area = (
-        base.transform_filter(alt.datum.Type == 'Blocked Attack (Red)')
+        base.transform_filter(alt.datum.Type == 'Blocked Traffic')
         .mark_area(opacity=0.25)
     )
     lines = base.mark_line(strokeWidth=3)
@@ -418,10 +430,17 @@ if not df_traffic.empty:
             titleColor='rgba(250,250,250,0.85)',
             gridColor='rgba(148,163,184,0.18)',
             tickColor='rgba(148,163,184,0.20)',
+            labelFont='Segoe UI',
+            titleFont='Segoe UI',
         )
         .configure_legend(
             labelColor='rgba(250,250,250,0.80)',
             titleColor='rgba(250,250,250,0.85)',
+            labelFont='Segoe UI',
+            titleFont='Segoe UI',
+        )
+        .configure_title(
+            font='Segoe UI'
         )
     )
 
