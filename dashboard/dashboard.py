@@ -369,7 +369,7 @@ if not df_traffic.empty:
     df_plot['Sequence_RTL'] = max_seq - df_plot['Sequence'] + 1
 
     max_val = float(df_plot[['Blocked_MBps', 'Suspicious_MBps', 'Benign_MBps']].max().max())
-    y_max = max(5.0, max_val * 1.2)
+    y_max = max(1.0, max_val * 1.2)
 
     df_long = df_plot.melt(
         id_vars=['Sequence_RTL'],

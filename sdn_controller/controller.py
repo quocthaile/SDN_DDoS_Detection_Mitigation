@@ -141,6 +141,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             'UDP_FLOOD_MIN_SIZE': 60,        # (Unused) kept for compatibility
             'SYN_FLOOD_PPS': 300,            # Minimum PPS to trigger SYN flood check
             'SYN_FLOOD_SIZE': 120,           # Max packet size for SYN flood classification
+            'ICMP_FLOOD_PPS': 300,           # Minimum PPS to trigger ICMP flood check
         }
 
         # --- Dashboard Display Timer (Grouped) ---
@@ -168,6 +169,7 @@ class SimpleMonitor13(app_manager.RyuApp):
         self.UDP_FLOOD_MIN_SIZE = THRESHOLDS['UDP_FLOOD_MIN_SIZE']
         self.SYN_FLOOD_PPS = THRESHOLDS['SYN_FLOOD_PPS']
         self.SYN_FLOOD_SIZE = THRESHOLDS['SYN_FLOOD_SIZE']
+        self.ICMP_FLOOD_PPS = THRESHOLDS['ICMP_FLOOD_PPS']
 
         self.PRED_LOCK_SECONDS = DISPLAY_TIMERS['PRED_LOCK_SECONDS']
         self.LOW_PRIORITY_ROTATE_SECONDS = DISPLAY_TIMERS['LOW_PRIORITY_ROTATE_SECONDS']
@@ -1522,6 +1524,14 @@ class SimpleMonitor13(app_manager.RyuApp):
                     elif ip_proto == 6 and pps_rate > self.SYN_FLOOD_PPS and avg_pkt_size < self.SYN_FLOOD_SIZE:
                         final_action = "BLOCK"
                         reason = f"Trigger: TCP SYN Flood ({int(avg_pkt_size)}B)"
+                        display_priority = 3
+                        flow_rule_verdict = "BLOCK"
+                        flow_ai_conf = ai_conf_score
+
+                    # RULE 4.5: BLOCK - ICMP Flood
+                    elif ip_proto == 1 and pps_rate > self.ICMP_FLOOD_PPS:
+                        final_action = "BLOCK"
+                        reason = f"Trigger: ICMP Flood ({int(pps_rate)}pps)"
                         display_priority = 3
                         flow_rule_verdict = "BLOCK"
                         flow_ai_conf = ai_conf_score
