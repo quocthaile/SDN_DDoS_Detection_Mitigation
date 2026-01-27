@@ -1,5 +1,5 @@
 # Ref repository
-https://github.com/chiragbiradar/DDoS-Attack-Detection-and-Mitigation.git
+https://github.com/chiragbiradar/DDoS-Attack-Detection-and-Mitigation
 
 # Cập nhật hệ thống, chú ý dùng python3.9 và pip cài đúng phiên bản
 sudo add-apt-repository ppa:deadsnakes/ppa
@@ -39,12 +39,6 @@ streamlit run dashboard.py
 
   Local URL: http://localhost:8501
   Network URL: http://172.28.43.238:8501
-
-# h2 lắng nghe dữ liệu udp
-h2 iperf -s -u &
-
-#h1 truyền sang h2
-h1 iperf -c 10.0.0.2 -u -b 25M -l 1400 -t 30
 
 
 # xterm h2

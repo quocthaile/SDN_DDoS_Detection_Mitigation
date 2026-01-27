@@ -496,24 +496,24 @@ class SimpleMonitor13(app_manager.RyuApp):
         
         # Parse the raw packet data
         pkt = packet.Packet(msg.data)
-        eth = pkt.get_protocols(ethernet.ethernet)[0]  # Get Ethernet header
+        # Get Ethernet header - eth
+        eth = pkt.get_protocols(ethernet.ethernet)[0]  
 
         # Ignore LLDP packets (Link Layer Discovery Protocol)
         # LLDP is used for topology discovery, not user traffic
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             return
-
         # FIREWALL CHECK: Block packets from banned IPs
+        # Drop packet silently (don't forward or install flow)
         if eth.ethertype == ether_types.ETH_TYPE_IP:
             ip_pkt = pkt.get_protocol(ipv4.ipv4)
             src_ip = ip_pkt.src
             if self.firewall_enabled and src_ip in self.blocked_ips:
-                return  # Drop packet silently (don't forward or install flow)
-
+                return
         # Extract MAC addresses
-        dst = eth.dst  # Destination MAC
-        src = eth.src  # Source MAC
-        dpid = datapath.id  # Switch datapath ID
+        dst = eth.dst           # Destination MAC
+        src = eth.src           # Source MAC
+        dpid = datapath.id      # Switch datapath ID
 
         # MAC LEARNING: Remember which port this MAC is on
         self.mac_to_port.setdefault(dpid, {})
@@ -1440,6 +1440,8 @@ class SimpleMonitor13(app_manager.RyuApp):
                     # -----------------------------------------
                     icmp_type = 8 if ip_proto == 1 else 0
                     icmp_code = 0
+                    icmp_type = stat.match.get('icmpv4_type', 0)
+                    icmp_code = stat.match.get('icmpv4_code', 0)
                     flags = 0
 
                     # Build feature vector (must match training data format)

@@ -1,5 +1,7 @@
 {
     "chat.tools.terminal.autoApprove": {
         "wsl": true
-    }
+    },
+    "python.analysis.typeCheckingMode": "off",
+    "python.analysis.autoImportCompletions": true
 }
