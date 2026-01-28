@@ -45,3 +45,6 @@ streamlit run dashboard.py
  ps aux | grep "mininet:h2"
  sudo nsenter -t PID -n bash
  tcpdump -n -i h2-eth0 icmp
+
+
+ pandas matplotlib seaborn scikit-learn
