@@ -17,17 +17,20 @@ from datetime import datetime
 class MachineLearning:
     def __init__(self):
         # Resolve paths relative to the project root (portable across machines)
+        # Resolve paths relative to the project root (portable across machines)
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.project_root = os.path.dirname(self.script_dir)
         self.models_dir = os.path.join(self.project_root, 'models')
         self.plots_dir = os.path.join(self.script_dir, 'plots')
         
         # Ensure output folders exist (models + plots)
+        # Ensure output folders exist (models + plots)
         os.makedirs(self.models_dir, exist_ok=True)
         os.makedirs(self.plots_dir, exist_ok=True)
         
         print("Loading dataset ...")
         
+        # 1. Load dataset.csv containing flow features and labels
         # 1. Load dataset.csv containing flow features and labels
         try:
             dataset_path = os.path.join(self.project_root, 'dataset', 'dataset.csv')
@@ -38,10 +41,21 @@ class MachineLearning:
             return
 
         # 2. Data cleaning: remove NaN/Inf values that break training
+        # 2. Data cleaning: remove NaN/Inf values that break training
         print("Cleaning Infinity/NaN values ...")
         self.flow_dataset.replace([np.inf, -np.inf], np.nan, inplace=True)
         self.flow_dataset.dropna(inplace=True)
 
+        # 3. Feature selection from dataset.csv
+        # These columns represent flow-level statistics used to detect DDoS:
+        # - ip_proto: IP protocol number (e.g., TCP/UDP/ICMP).
+        # - icmp_code, icmp_type: ICMP-specific fields (useful for ICMP floods).
+        # - flow_duration_sec, flow_duration_nsec: flow lifetime length.
+        # - idle_timeout, hard_timeout: flow timeouts from the SDN controller.
+        # - flags: TCP flags summary (indicates scan/flood patterns).
+        # - packet_count, byte_count: total packets/bytes in the flow.
+        # - packet_count_per_second, packet_count_per_nsecond: packet rate.
+        # - byte_count_per_second, byte_count_per_nsecond: byte rate.
         # 3. Feature selection from dataset.csv
         # These columns represent flow-level statistics used to detect DDoS:
         # - ip_proto: IP protocol number (e.g., TCP/UDP/ICMP).
@@ -61,12 +75,15 @@ class MachineLearning:
         ]
         
         # Keep only columns that exist in the current dataset.csv
+        # Keep only columns that exist in the current dataset.csv
         existing_cols = [c for c in self.feature_cols if c in self.flow_dataset.columns]
+        # The target label is the class (e.g., benign vs attack)
         # The target label is the class (e.g., benign vs attack)
         if 'label' not in self.flow_dataset.columns:
             print("ERROR: Label column not found!")
             return
 
+        # Build feature matrix X and target vector y
         # Build feature matrix X and target vector y
         self.X = self.flow_dataset[existing_cols].values.astype('float64')
         self.y = self.flow_dataset['label'].values
@@ -98,15 +115,21 @@ class MachineLearning:
         )
         
         # Store metrics for later plotting
+        # Store metrics for later plotting
         self.results = {}
 
     def train_and_evaluate(self):
+        # Define candidate ML models for comparison
         # Define candidate ML models for comparison
         models = {
             "Logistic Regression": LogisticRegression(solver='liblinear', random_state=0),
             "K-Nearest Neighbors": KNeighborsClassifier(n_neighbors=5, metric='minkowski', p=2),
             "Naive Bayes": GaussianNB(),
             "Decision Tree": DecisionTreeClassifier(criterion='entropy', random_state=0),
+            # Random Forest training parameters:
+            # - n_estimators=20: number of decision trees in the forest.
+            # - criterion='entropy': split quality metric (information gain).
+            # - random_state=0: fixed seed for reproducibility.
             # Random Forest training parameters:
             # - n_estimators=20: number of decision trees in the forest.
             # - criterion='entropy': split quality metric (information gain).
@@ -119,6 +142,7 @@ class MachineLearning:
         print("="*50)
 
         for name, model in models.items():
+            # Measure training + inference time per model
             # Measure training + inference time per model
             start_time = datetime.now()
             print(f"\nTraining {name} ...")
