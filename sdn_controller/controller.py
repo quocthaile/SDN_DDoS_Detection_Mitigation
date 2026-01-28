@@ -1155,15 +1155,13 @@ class SimpleMonitor13(app_manager.RyuApp):
             bps_nsec = bps / 1e9 if bps > 0 else 0
             icmp_code = stat.match.get('icmpv4_code') or 0
             icmp_type = stat.match.get('icmpv4_type') or 0
-            # Extract TCP flags from match for dataset logging
-            flags = stat.match.get('tcp_flags', stat.match.get('tcp_flags_mask', 0)) or 0
             flow_id = f"{src}-{dst}-{proto}"
             
             # Build row matching dataset columns
             row = [
                 timestamp, dpid, flow_id, src, 0, dst, 0, proto,
                 icmp_code, icmp_type, stat.duration_sec, stat.duration_nsec,
-                stat.idle_timeout, stat.hard_timeout, flags, stat.packet_count, stat.byte_count,
+                stat.idle_timeout, stat.hard_timeout, 0, stat.packet_count, stat.byte_count,
                 f"{pps:.2f}", f"{pps_nsec:.9f}", f"{bps:.2f}", f"{bps_nsec:.9f}", label
             ]
             
@@ -1444,8 +1442,7 @@ class SimpleMonitor13(app_manager.RyuApp):
                     # icmp_code = 0
                     icmp_type = stat.match.get('icmpv4_type', 0)
                     icmp_code = stat.match.get('icmpv4_code', 0)
-                    # Extract TCP flags (if present in flow match). Fall back to 0.
-                    flags = stat.match.get('tcp_flags', stat.match.get('tcp_flags_mask', 0)) or 0
+                    flags = 0
 
                     # Build feature vector (must match training data format)
                     features = np.array([[
