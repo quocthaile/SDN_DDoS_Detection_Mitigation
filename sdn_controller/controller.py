@@ -128,7 +128,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             'VOLUMETRIC_THRESHOLD': 4000,    # Maximum allowed PPS before hard block
 
             # --- AI Confidence Thresholds ---
-            'AI_CONFIDENCE_THRESHOLD': 0.75, # AI probability threshold for blocking
+            'AI_CONFIDENCE_THRESHOLD': 0.6, # AI probability threshold for blocking
             'AI_HIGH_CONFIDENCE': 0.99,      # Threshold for "absolute certainty"
             'AI_WARNING_THRESHOLD': 0.5,     # Threshold for warning (suspicious traffic)
 
@@ -496,24 +496,24 @@ class SimpleMonitor13(app_manager.RyuApp):
         
         # Parse the raw packet data
         pkt = packet.Packet(msg.data)
-        # Get Ethernet header - eth
-        eth = pkt.get_protocols(ethernet.ethernet)[0]  
+        eth = pkt.get_protocols(ethernet.ethernet)[0]  # Get Ethernet header
 
         # Ignore LLDP packets (Link Layer Discovery Protocol)
         # LLDP is used for topology discovery, not user traffic
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             return
+
         # FIREWALL CHECK: Block packets from banned IPs
-        # Drop packet silently (don't forward or install flow)
         if eth.ethertype == ether_types.ETH_TYPE_IP:
             ip_pkt = pkt.get_protocol(ipv4.ipv4)
             src_ip = ip_pkt.src
             if self.firewall_enabled and src_ip in self.blocked_ips:
-                return
+                return  # Drop packet silently (don't forward or install flow)
+
         # Extract MAC addresses
-        dst = eth.dst           # Destination MAC
-        src = eth.src           # Source MAC
-        dpid = datapath.id      # Switch datapath ID
+        dst = eth.dst  # Destination MAC
+        src = eth.src  # Source MAC
+        dpid = datapath.id  # Switch datapath ID
 
         # MAC LEARNING: Remember which port this MAC is on
         self.mac_to_port.setdefault(dpid, {})
@@ -982,7 +982,7 @@ class SimpleMonitor13(app_manager.RyuApp):
         # Unblock each IP
         for ip in ips_to_unblock:
             if ip in self.blocked_ips:
-                self._unblock_ip(datapath, ip)
+                self._unblock_ip(ip)
 
     # def _unblock_ip(self, datapath, ip_src):
     #     """
@@ -1438,8 +1438,8 @@ class SimpleMonitor13(app_manager.RyuApp):
                     # -----------------------------------------
                     # STEP 1: AI PREDICTION
                     # -----------------------------------------
-                    icmp_type = 8 if ip_proto == 1 else 0
-                    icmp_code = 0
+                    # icmp_type = 8 if ip_proto == 1 else 0
+                    # icmp_code = 0
                     icmp_type = stat.match.get('icmpv4_type', 0)
                     icmp_code = stat.match.get('icmpv4_code', 0)
                     flags = 0

@@ -45,3 +45,23 @@ streamlit run dashboard.py
  ps aux | grep "mininet:h2"
  sudo nsenter -t PID -n bash
  tcpdump -n -i h2-eth0 icmp
+
+
+# ================================ TCP flags ===================================
+1: FIN (kết thúc kết nối)
+hping3 -F -p 80 target_ip
+2: SYN (khởi tạo kết nối)
+hping3 -S -p 80 target_ip
+4: RST (reset kết nối)
+hping3 -R -p 80 target_ip
+8: PSH (đẩy dữ liệu ngay)
+hping3 -P -p 80 target_ip
+16: ACK (xác nhận)
+32: URG (dữ liệu khẩn cấp)
+hping3 -U -p 80 target_ip
+64: ECE (ECN-Echo, dùng cho congestion control)
+128: CWR (Congestion Window Reduced)
+18: SYN + ACK
+hping3 -S -A -p 80 target_ip
+17: FIN + ACK
+hping3 -F -A -p 80 target_ip
