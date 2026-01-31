@@ -1,6 +1,6 @@
 # Windows system files
-Desktop.ini
-**/Desktop.ini
+desktop.ini
+**/desktop.ini
 .vscode/
 # Optional: common Windows thumbnail cache
 Thumbs.db

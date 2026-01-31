@@ -113,7 +113,7 @@ class SimpleMonitor13(app_manager.RyuApp):
             'DEBUG_LOGS': False,             # Enable/disable DEBUG lines in CLI
             'DEBUG_BLOCKED_FLOW_LOGS': False,  # Enable/disable [BLOCKED FLOW] logs
             'MANUAL_UNBLOCK_GRACE': 60,      # Seconds to prevent re-block after manual unblock
-            'ENABLE_WHITELIST_FILTER': True,  # Enable/disable whitelist filter
+            'ENABLE_WHITELIST_FILTER': False,  # Enable/disable whitelist filter
             'ENABLE_VOLUMETRIC_THRESHOLD': False,  # Enable/disable volumetric threshold rule
         }
 
@@ -199,6 +199,10 @@ class SimpleMonitor13(app_manager.RyuApp):
         
         self.flow_history = {}               # Historical flow stats for rate calculation
                                              # {flow_key: (last_pkts, last_bytes, last_timestamp)}
+        
+        self.flow_first_seen = {}            # Track first appearance time of flows
+                                             # {flow_key: timestamp}
+                                             # Used to calculate time-to-detection
         
         self.traffic_summary = {'TCP': 0, 'UDP': 0, 'ICMP': 0, 'Total': 0}
                                              # Aggregate flow counts by protocol
@@ -945,7 +949,24 @@ class SimpleMonitor13(app_manager.RyuApp):
         # Block each IP
         for ip in ips_to_block:
             if ip not in self.blocked_ips:
-                self._block_ip(datapath, ip, "Manual-Block", 0, reason="Manual-Block")
+                # Calculate time-to-detection for manual block
+                reason = "Manual-Block"
+                current_time = time.time()
+                
+                # Find matching flow_key for this IP
+                matching_keys = [k for k in self.flow_first_seen if k[1] == ip]
+                if matching_keys:
+                    # Use the oldest (first) entry for this IP
+                    first_seen_time = min(self.flow_first_seen[k] for k in matching_keys)
+                    time_delta = current_time - first_seen_time
+                    time_str = self._format_time_delta(time_delta)
+                    reason = f"Manual-Block [After {time_str}]"
+                    
+                    # Clear tracking for all flows from this IP
+                    for k in matching_keys:
+                        del self.flow_first_seen[k]
+                
+                self._block_ip(datapath, ip, "Manual-Block", 0, reason=reason)
 
     def _check_manual_unblocks(self, datapath):
         """
@@ -1065,6 +1086,8 @@ class SimpleMonitor13(app_manager.RyuApp):
                 del self.flow_history[key]
             if key in self.active_flow_stats:
                 del self.active_flow_stats[key]
+            if key in self.flow_first_seen:
+                del self.flow_first_seen[key]
                 
         print(f"-> Unban complete for {ip}. History cleared.")
 
@@ -1114,6 +1137,50 @@ class SimpleMonitor13(app_manager.RyuApp):
     # SECTION 12: ATTACK DETECTION HELPERS
     # ============================================================
 
+    def _format_time_delta(self, seconds):
+        """
+        Format time delta into human-readable string with high precision.
+        
+        Args:
+            seconds: Time in seconds
+            
+        Returns:
+            Formatted string with dynamic precision:
+            - < 0.000001s: nanoseconds (e.g., "500ns", "125ns")
+            - 0.000001s - 0.001s: microseconds with decimals (e.g., "1.5μs", "125.8μs")
+            - 0.001s - 1s: milliseconds with decimals (e.g., "1.2ms", "250.5ms")
+            - 1s - 60s: seconds (e.g., "5.2s", "45.0s")
+            - 60s - 3600s: minutes and seconds (e.g., "1m 30s")
+            - >= 3600s: hours and minutes (e.g., "2h 15m")
+        """
+        if seconds < 0.000001:  # Less than 1 microsecond -> nanoseconds
+            nanoseconds = seconds * 1_000_000_000
+            if nanoseconds < 1:
+                return "~0ns"  # Practically instant
+            return f"{nanoseconds:.0f}ns"
+        elif seconds < 0.001:  # Less than 1 millisecond -> microseconds with decimals
+            microseconds = seconds * 1_000_000
+            if microseconds < 10:
+                return f"{microseconds:.1f}μs"  # e.g., "1.5μs", "9.8μs"
+            else:
+                return f"{microseconds:.0f}μs"  # e.g., "125μs", "999μs"
+        elif seconds < 1.0:  # Less than 1 second -> milliseconds with decimals
+            milliseconds = seconds * 1000
+            if milliseconds < 10:
+                return f"{milliseconds:.1f}ms"  # e.g., "1.2ms", "9.8ms"
+            else:
+                return f"{milliseconds:.0f}ms"  # e.g., "125ms", "999ms"
+        elif seconds < 60:  # Less than 1 minute
+            return f"{seconds:.1f}s"
+        elif seconds < 3600:  # Less than 1 hour
+            mins = int(seconds // 60)
+            secs = int(seconds % 60)
+            return f"{mins}m {secs}s"
+        else:  # 1 hour or more
+            hours = int(seconds // 3600)
+            mins = int((seconds % 3600) // 60)
+            return f"{hours}h {mins}m"
+    
     def _get_attack_reason(self, proto, pps):
         """
         Generate human-readable attack reason based on protocol and rate.
@@ -1368,8 +1435,21 @@ class SimpleMonitor13(app_manager.RyuApp):
                     pps_rate = 0
                     bps_rate = 0
 
+                # TRACK FIRST SEEN TIME (for time-to-detection calculation)
+                # Must be done BEFORE updating flow_history to capture new flows
+                is_new_flow = (flow_key not in self.flow_history)
+                
                 # Update flow history for next calculation
                 self.flow_history[flow_key] = (packet_count, byte_count, current_time)
+                
+                # Record first seen timestamp for new flows or flows with traffic
+                if flow_key not in self.flow_first_seen:
+                    if is_new_flow:
+                        # Completely new flow - record timestamp
+                        self.flow_first_seen[flow_key] = current_time
+                    elif delta_pkts is not None and delta_pkts > 0:
+                        # Existing flow with new packets - record timestamp
+                        self.flow_first_seen[flow_key] = current_time
 
                 traffic_type = 'Benign'  # Default classification
                 flow_reason = self.active_flow_stats.get(flow_key, {}).get('reason', '')
@@ -1570,6 +1650,15 @@ class SimpleMonitor13(app_manager.RyuApp):
                     # STEP 3: EXECUTE ACTION
                     # -----------------------------------------
                     if final_action == "BLOCK":
+                        # Calculate time-to-detection
+                        time_delta = 0
+                        if flow_key in self.flow_first_seen:
+                            time_delta = current_time - self.flow_first_seen[flow_key]
+                            time_str = self._format_time_delta(time_delta)
+                            reason = f"{reason} [Detected in {time_str}]"
+                            # Clear tracking after block (will reset on next appearance)
+                            del self.flow_first_seen[flow_key]
+                        
                         if self.firewall_enabled:
                             traffic_type = 'Blocked'
                             # Install blocking flow and log attack
@@ -1584,6 +1673,15 @@ class SimpleMonitor13(app_manager.RyuApp):
                                            label="Passive Detect", reason=f"[FW-OFF] {reason}")
 
                     elif final_action == "WARNING":
+                        # Calculate time-to-warning
+                        time_delta = 0
+                        if flow_key in self.flow_first_seen:
+                            time_delta = current_time - self.flow_first_seen[flow_key]
+                            time_str = self._format_time_delta(time_delta)
+                            reason = f"{reason} [Detected in {time_str}]"
+                            # Clear tracking after warning (will reset if traffic continues)
+                            del self.flow_first_seen[flow_key]
+                        
                         log_label = "Warning" if self.firewall_enabled else "Passive Warning"
                         self._log_attack(ip_src, ip_dst, ip_proto, packet_count,
                                        label=log_label, reason=reason)
@@ -1914,6 +2012,11 @@ class SimpleMonitor13(app_manager.RyuApp):
                                       if len(k) > 2 and k[2] == ip_src and self.active_flow_stats[k].get('type') != 'Blocked']
         for k in keys_to_remove_active_dst:
             del self.active_flow_stats[k]
+        
+        # Clear flow_first_seen tracking for blocked flows (reset time-to-detection)
+        keys_to_clear_first_seen = [k for k in self.flow_first_seen if k[1] == ip_src]
+        for k in keys_to_clear_first_seen:
+            del self.flow_first_seen[k]
 
         # UPDATE OFFENDER HISTORY
         self._update_offender_history(ip_src, proto)
